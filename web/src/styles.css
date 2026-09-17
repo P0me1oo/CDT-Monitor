@@ -222,6 +222,7 @@ h3 { letter-spacing: 0; }
 .account-title span { color: var(--muted-soft); font-size: 11px; }
 .account-card__side { min-width: 168px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .status-pill { height: 30px; padding: 0 11px; display: flex; align-items: center; gap: 7px; border-radius: 99px; font-size: 10px; font-weight: 800; background: rgba(225,229,233,.72); color: #696970; }
+.status-pill-group { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .status-pill i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .status-pill.positive { color: var(--green); background: var(--green-soft); }
 .status-pill.negative { color: #717179; }

@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wang4386/CDT-Monitor/internal/aliyun"
-	"github.com/wang4386/CDT-Monitor/internal/domain"
-	"github.com/wang4386/CDT-Monitor/internal/notify"
-	"github.com/wang4386/CDT-Monitor/internal/security"
-	"github.com/wang4386/CDT-Monitor/internal/store"
+	"github.com/P0me1oo/CDT-Monitor/internal/aliyun"
+	"github.com/P0me1oo/CDT-Monitor/internal/domain"
+	"github.com/P0me1oo/CDT-Monitor/internal/notify"
+	"github.com/P0me1oo/CDT-Monitor/internal/security"
+	"github.com/P0me1oo/CDT-Monitor/internal/store"
 )
 
 const (
@@ -320,7 +320,7 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 		}
 	}
 
-	if config.KeepAlive && !overThreshold && !statusChangedBySchedule && status == domain.StatusStopped && (!account.ScheduleEnabled || inTimeRange(now.Format("15:04"), account.StartTime, account.StopTime)) {
+	if config.KeepAlive && !overThreshold && !statusChangedBySchedule && !account.KeepAlivePaused(now) && status == domain.StatusStopped && (!account.ScheduleEnabled || inTimeRange(now.Format("15:04"), account.StartTime, account.StopTime)) {
 		key := fmt.Sprintf("keepalive:%d:%s", account.ID, now.Format("200601021504"))
 		fresh, recordErr := e.store.RecordActionEvent(ctx, key, account.ID, "keepalive", "attempting", "")
 		if recordErr != nil {
@@ -376,6 +376,10 @@ func (e *Engine) executeScheduledAction(ctx context.Context, config domain.Confi
 	if action == "stop" {
 		status = domain.StatusStopping
 	}
+	if action == "start" {
+		// 定时开机意味着新的运行时段开始，清除手动关机留下的保活暂停标记。
+		_ = e.store.SetKeepAlivePause(ctx, account.ID, 0)
+	}
 	_ = e.store.UpdateRuntime(ctx, account.ID, account.TrafficUsed, status, time.Now().UTC())
 	_ = e.store.AddLog(ctx, "info", fmt.Sprintf("执行定时%s [%s]", map[string]string{"start": "开机", "stop": "关机"}[action], masked(account.AccessKeyID)))
 	if config.EnableScheduleMail {
@@ -404,9 +408,6 @@ func (e *Engine) control(ctx context.Context, accountID int64, action, source st
 	if transient(account.InstanceStatus) {
 		return "", fmt.Errorf("instance is currently %s", account.InstanceStatus)
 	}
-	if config.KeepAlive && action == "stop" {
-		return "", errors.New("manual shutdown is disabled while keep-alive is enabled")
-	}
 	secret, err := e.store.AccountSecret(ctx, accountID)
 	if err != nil {
 		return "", err
@@ -421,9 +422,38 @@ func (e *Engine) control(ctx context.Context, accountID int64, action, source st
 	if err = e.store.UpdateRuntime(ctx, account.ID, account.TrafficUsed, status, time.Now().UTC()); err != nil {
 		return "", err
 	}
+	// 手动关机后暂停保活，避免实例在下一轮监控里被立刻拉起；手动开机则恢复保活。
+	pause := int64(0)
+	if action == "stop" {
+		location, locErr := time.LoadLocation(config.Timezone)
+		if locErr != nil {
+			location = time.FixedZone("CST", 8*3600)
+		}
+		pause = keepAlivePauseUntil(time.Now().In(location), account)
+	}
+	if err = e.store.SetKeepAlivePause(ctx, account.ID, pause); err != nil {
+		return "", err
+	}
 	message := fmt.Sprintf("%s控制实例 [%s]：%s", source, masked(account.AccessKeyID), action)
 	_ = e.store.AddLog(ctx, "audit", message)
 	return message, nil
+}
+
+// keepAlivePauseUntil 计算手动关机后保活的暂停截止时间。
+// 有定时计划时暂停到下一个开机点，没有计划时一直暂停到手动开机。
+func keepAlivePauseUntil(now time.Time, account domain.Account) int64 {
+	if !account.ScheduleEnabled {
+		return domain.KeepAlivePauseUntilStart
+	}
+	parsed, err := time.Parse("15:04", account.StartTime)
+	if err != nil {
+		return domain.KeepAlivePauseUntilStart
+	}
+	target := time.Date(now.Year(), now.Month(), now.Day(), parsed.Hour(), parsed.Minute(), 0, 0, now.Location())
+	if !target.After(now) {
+		target = target.AddDate(0, 0, 1)
+	}
+	return target.Unix()
 }
 
 func (e *Engine) accountLock(accountID int64) *sync.Mutex {
@@ -560,13 +590,19 @@ func (e *Engine) Summary(ctx context.Context) ([]domain.AccountSummary, time.Tim
 		return nil, time.Time{}, err
 	}
 	result := make([]domain.AccountSummary, 0, len(config.Accounts))
+	location, err := time.LoadLocation(config.Timezone)
+	if err != nil {
+		location = time.FixedZone("CST", 8*3600)
+	}
+	now := time.Now().In(location)
 	for _, account := range config.Accounts {
 		percentage := usagePercent(account.TrafficUsed, account.MaxTraffic)
 		item := domain.AccountSummary{
 			ID: account.ID, Account: masked(account.AccessKeyID), Remark: account.Remark, Region: account.RegionID, RegionName: RegionName(account.RegionID),
 			FlowTotal: account.MaxTraffic, FlowUsed: math.Round(account.TrafficUsed*100) / 100, Percentage: percentage, Threshold: config.TrafficThreshold,
 			OverThreshold: percentage >= float64(config.TrafficThreshold), InstanceStatus: account.InstanceStatus, LastUpdated: account.UpdatedAt,
-			Stale: account.UpdatedAt.IsZero() || time.Since(account.UpdatedAt) > time.Duration(max(config.APIInterval*2, 180))*time.Second,
+			Stale:           account.UpdatedAt.IsZero() || time.Since(account.UpdatedAt) > time.Duration(max(config.APIInterval*2, 180))*time.Second,
+			KeepAlivePaused: config.KeepAlive && account.KeepAlivePaused(now),
 		}
 		if config.EnableBilling {
 			var billingError struct {

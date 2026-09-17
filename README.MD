@@ -13,6 +13,7 @@ CDT Monitor 是一个用于阿里云 CDT 流量监控、ECS 实例自动化控�
 - 普通停机 `KeepCharging` 和节省停机 `StopCharging`。
 - 每日定时开关机，任务延迟或进程重启后提供短窗口补偿。
 - 抢占式实例保活，阈值熔断优先于保活。
+- 保活启用时仍可手动关机；关机后自动暂停该实例的保活，到下一次定时开机时恢复。
 - Web 控制台手动开机、关机和刷新。
 - SMTP、Telegram Bot、自定义 Webhook 通知；Telegram 支持自定义反代和 SOCKS5。
 - 中国站和国际站 BSS 端点、CNY/USD 账单与余额缓存。
@@ -48,7 +49,7 @@ Go HTTP API ──► SQLite WAL 状态快照
 ```yaml
 services:
   cdt-monitor:
-    image: ghcr.io/wang4386/cdt-monitor:latest
+    image: ghcr.io/p0me1oo/cdt-monitor:latest
     container_name: cdt-monitor
     restart: unless-stopped
     init: true
@@ -83,13 +84,7 @@ docker run -d \
   --restart unless-stopped \
   -p 43210:8080 \
   -v cdt-data:/data \
-  ghcr.io/wang4386/cdt-monitor:latest
-```
-
-Docker Hub 用户也可以使用：
-
-```text
-qninq/cdt-monitor:latest
+  ghcr.io/p0me1oo/cdt-monitor:latest
 ```
 
 运行镜像使用非 root 用户和 `scratch` 基础层，不包含 Nginx、PHP-FPM、Cron、shell 或包管理器。HTTPS 请求所需的 CA 证书会单独复制进镜像。
@@ -194,9 +189,12 @@ GET /monitor.php?key=<具有 cron:run scope 的 API Key>
 
 ## 相关链接
 
-- 项目主页：[GitHub](https://github.com/wang4386/CDT-Monitor)
-- 作者博客：[qninq.cn](https://qninq.cn)
+- 项目主页：[GitHub](https://github.com/P0me1oo/CDT-Monitor)
 - 技术社区：[NodeSeek](https://www.nodeseek.com/) · [Linux.do](https://linux.do/)
+
+## 致谢
+
+本项目 fork 自 [wang4386/CDT-Monitor](https://github.com/wang4386/CDT-Monitor)，原作者为 青柠（[qninq.cn](https://qninq.cn)）。原项目采用 MIT 协议，版权声明保留在 [LICENSE](LICENSE) 中。
 
 ## 本地开发
 
@@ -227,14 +225,14 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cdt-monitor ./cmd/cdt-monit
 | `CI` | `dev`/`main` push、PR | 前端构建、Go race test、vet、Linux build |
 | `Automatic Release` | `main` push 或手动 | 自动计算 patch 版本、创建 tag 并调用正式发布流程 |
 | `Release Binaries` | 自动发布、`v*.*.*` tag 或手动 | Linux/Windows/macOS 二进制、SHA-256 校验和及 GitHub Release |
-| `Container Images` | `dev`/`main`/tag | 同时发布 GHCR 与 Docker Hub 的 linux/amd64、linux/arm64 镜像 |
+| `Container Images` | `dev`/`main`/tag | 发布 GHCR 的 linux/amd64、linux/arm64 镜像 |
 | `Android Widget` | 仅手动触发 | Android 原型 APK/AAB workflow artifact |
 
 镜像标签：
 
-- `dev` 分支：`ghcr.io/wang4386/cdt-monitor:dev`、`qninq/cdt-monitor:dev`
-- `main` 分支：`ghcr.io/wang4386/cdt-monitor:latest`、`qninq/cdt-monitor:latest`
-- Release：两个仓库均发布 `v2.x.x`、`2.x.x` 与 `2.x` 标签
+- `dev` 分支：`ghcr.io/p0me1oo/cdt-monitor:dev`
+- `main` 分支：`ghcr.io/p0me1oo/cdt-monitor:latest`
+- Release：发布 `v2.x.x`、`2.x.x` 与 `2.x` 标签
 
 ## 安全建议
 

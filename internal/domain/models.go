@@ -10,6 +10,9 @@ const (
 	StatusStopping = "Stopping"
 )
 
+// KeepAlivePauseUntilStart 表示保活一直暂停到下一次开机，用于没有定时计划的实例。
+const KeepAlivePauseUntilStart int64 = -1
+
 type Account struct {
 	ID               int64     `json:"id"`
 	AccessKeyID      string    `json:"access_key_id"`
@@ -27,11 +30,25 @@ type Account struct {
 	InstanceStatus   string    `json:"instance_status"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	LastKeepAliveAt  time.Time `json:"last_keep_alive_at,omitempty"`
-	MonthlyCost      *float64  `json:"monthly_cost,omitempty"`
-	Balance          *float64  `json:"balance,omitempty"`
-	Currency         string    `json:"currency,omitempty"`
-	BillingError     string    `json:"billing_error,omitempty"`
-	BillingUpdatedAt time.Time `json:"billing_updated_at,omitempty"`
+	// KeepAlivePausedUntil 记录手动关机后保活的暂停截止时间。
+	// 0 表示未暂停；正数为 Unix 秒时间戳；KeepAlivePauseUntilStart 表示一直暂停到下一次开机。
+	KeepAlivePausedUntil int64     `json:"keepalive_paused_until,omitempty"`
+	MonthlyCost          *float64  `json:"monthly_cost,omitempty"`
+	Balance              *float64  `json:"balance,omitempty"`
+	Currency             string    `json:"currency,omitempty"`
+	BillingError         string    `json:"billing_error,omitempty"`
+	BillingUpdatedAt     time.Time `json:"billing_updated_at,omitempty"`
+}
+
+// KeepAlivePaused 判断 now 时刻该实例的保活是否处于暂停状态。
+func (a Account) KeepAlivePaused(now time.Time) bool {
+	if a.KeepAlivePausedUntil == 0 {
+		return false
+	}
+	if a.KeepAlivePausedUntil < 0 {
+		return true
+	}
+	return now.Unix() < a.KeepAlivePausedUntil
 }
 
 type EmailConfig struct {
@@ -92,23 +109,24 @@ type Config struct {
 }
 
 type AccountSummary struct {
-	ID             int64     `json:"id"`
-	Account        string    `json:"account"`
-	Remark         string    `json:"remark"`
-	Region         string    `json:"region"`
-	RegionName     string    `json:"region_name"`
-	FlowTotal      float64   `json:"flow_total"`
-	FlowUsed       float64   `json:"flow_used"`
-	Percentage     float64   `json:"percentage"`
-	Threshold      int       `json:"threshold"`
-	OverThreshold  bool      `json:"over_threshold"`
-	InstanceStatus string    `json:"instance_status"`
-	LastUpdated    time.Time `json:"last_updated"`
-	Stale          bool      `json:"stale"`
-	MonthlyCost    *float64  `json:"monthly_cost,omitempty"`
-	Balance        *float64  `json:"balance,omitempty"`
-	Currency       string    `json:"currency,omitempty"`
-	BillingError   string    `json:"billing_error,omitempty"`
+	ID              int64     `json:"id"`
+	Account         string    `json:"account"`
+	Remark          string    `json:"remark"`
+	Region          string    `json:"region"`
+	RegionName      string    `json:"region_name"`
+	FlowTotal       float64   `json:"flow_total"`
+	FlowUsed        float64   `json:"flow_used"`
+	Percentage      float64   `json:"percentage"`
+	Threshold       int       `json:"threshold"`
+	OverThreshold   bool      `json:"over_threshold"`
+	InstanceStatus  string    `json:"instance_status"`
+	LastUpdated     time.Time `json:"last_updated"`
+	Stale           bool      `json:"stale"`
+	KeepAlivePaused bool      `json:"keepalive_paused"`
+	MonthlyCost     *float64  `json:"monthly_cost,omitempty"`
+	Balance         *float64  `json:"balance,omitempty"`
+	Currency        string    `json:"currency,omitempty"`
+	BillingError    string    `json:"billing_error,omitempty"`
 }
 
 type Job struct {

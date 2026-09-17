@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wang4386/CDT-Monitor/internal/notify"
-	"github.com/wang4386/CDT-Monitor/internal/store"
+	"github.com/P0me1oo/CDT-Monitor/internal/notify"
+	"github.com/P0me1oo/CDT-Monitor/internal/store"
 )
 
 func TestRunOnceReportsBusyLease(t *testing.T) {

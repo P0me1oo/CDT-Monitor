@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/wang4386/CDT-Monitor/internal/domain"
-	"github.com/wang4386/CDT-Monitor/internal/engine"
-	"github.com/wang4386/CDT-Monitor/internal/store"
+	"github.com/P0me1oo/CDT-Monitor/internal/domain"
+	"github.com/P0me1oo/CDT-Monitor/internal/engine"
+	"github.com/P0me1oo/CDT-Monitor/internal/store"
 )
 
 func TestSecurityHeadersAllowFaviconEndpoint(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/wang4386/CDT-Monitor/internal/security"
+	"github.com/P0me1oo/CDT-Monitor/internal/security"
 )
 
 const schema = `
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     instance_status TEXT NOT NULL DEFAULT 'Unknown',
     updated_at INTEGER NOT NULL DEFAULT 0,
     last_keep_alive_at INTEGER NOT NULL DEFAULT 0,
+    keepalive_paused_until INTEGER NOT NULL DEFAULT 0,
     remark TEXT NOT NULL DEFAULT '',
     site_type TEXT NOT NULL DEFAULT 'china',
     deleted_at INTEGER NOT NULL DEFAULT 0
@@ -151,6 +152,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{"remark", "TEXT NOT NULL DEFAULT ''"},
 		{"site_type", "TEXT NOT NULL DEFAULT 'china'"},
 		{"deleted_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"keepalive_paused_until", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(ctx, "accounts", col.name, col.definition); err != nil {
 			return err

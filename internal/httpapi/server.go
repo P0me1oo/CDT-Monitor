@@ -21,10 +21,10 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/wang4386/CDT-Monitor/internal/domain"
-	"github.com/wang4386/CDT-Monitor/internal/engine"
-	"github.com/wang4386/CDT-Monitor/internal/security"
-	"github.com/wang4386/CDT-Monitor/internal/store"
+	"github.com/P0me1oo/CDT-Monitor/internal/domain"
+	"github.com/P0me1oo/CDT-Monitor/internal/engine"
+	"github.com/P0me1oo/CDT-Monitor/internal/security"
+	"github.com/P0me1oo/CDT-Monitor/internal/store"
 )
 
 type principal struct {
@@ -139,8 +139,8 @@ func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 		"version":     s.build.Version,
 		"commit":      s.build.Commit,
 		"built_at":    s.build.BuiltAt,
-		"repository":  "https://github.com/wang4386/CDT-Monitor",
-		"release_url": "https://github.com/wang4386/CDT-Monitor/releases",
+		"repository":  "https://github.com/P0me1oo/CDT-Monitor",
+		"release_url": "https://github.com/P0me1oo/CDT-Monitor/releases",
 	}
 	if r.URL.Query().Get("check") == "1" {
 		latest, err := latestRelease(r.Context(), s.build.Version)
@@ -469,7 +469,7 @@ func (s *Server) takePasskeySession(id, kind string) (passkeySession, bool) {
 }
 
 func latestRelease(ctx context.Context, version string) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/wang4386/CDT-Monitor/releases/latest", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/P0me1oo/CDT-Monitor/releases/latest", nil)
 	if err != nil {
 		return "", err
 	}

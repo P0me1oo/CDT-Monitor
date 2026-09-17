@@ -281,7 +281,6 @@ function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onHistory, 
   const heartbeatAge = status.system_last_run ? Math.floor((Date.now() - new Date(status.system_last_run).getTime()) / 1000) : Infinity
 
   const runAction = async (account: AccountSummary, action: 'start' | 'stop' | 'refresh') => {
-    if (action === 'stop' && config.keep_alive) { notify('保活启用时不能手动关机', 'error'); return }
     setBusy((value) => ({ ...value, [account.id]: action }))
     try {
       const path = action === 'refresh' ? `/api/v1/accounts/${account.id}/refresh` : `/api/v1/accounts/${account.id}/actions/${action}`
@@ -367,7 +366,10 @@ function AccountCard({ account, busy, keepAlive, billingEnabled, onAction, onHis
         <div className={`status-icon ${statusTone}`}><Server size={20} /></div>
         <div className="account-title"><h3>{account.remark || account.account}</h3><span>{account.region_name}</span></div>
         <div className="account-card__side">
-          <div className={`status-pill ${statusTone}`}><i />{statusLabel(account.instance_status)}</div>
+          <div className="status-pill-group">
+            <div className={`status-pill ${statusTone}`}><i />{statusLabel(account.instance_status)}</div>
+            {keepAlive && account.keepalive_paused && <div className="status-pill"><i />保活已暂停</div>}
+          </div>
           {billingEnabled && <div className="account-billing" aria-label="账单与余额"><div><span>本月费用</span><b>{account.monthly_cost === undefined ? '待同步' : `${currency}${account.monthly_cost.toFixed(2)}`}</b></div><div><span>账户余额</span><b>{account.balance === undefined ? '待同步' : `${currency}${account.balance.toFixed(2)}`}</b></div><small className={account.billing_error ? 'billing-error' : ''}>{account.billing_error || (hasBilling ? '已同步' : '待同步')}</small></div>}
         </div>
       </header>
@@ -379,7 +381,7 @@ function AccountCard({ account, busy, keepAlive, billingEnabled, onAction, onHis
         <div className="control-group">
           <IconButton label="刷新实例" disabled={!!busy} onClick={() => onAction('refresh')}>{busy === 'refresh' ? <LoaderCircle className="spin" /> : <RefreshCw />}</IconButton>
           {account.instance_status === 'Stopped' && <IconButton label="开机" disabled={!!busy} tone="positive" onClick={() => onAction('start')}>{busy === 'start' ? <LoaderCircle className="spin" /> : <Play />}</IconButton>}
-          {account.instance_status === 'Running' && <IconButton label={keepAlive ? '保活启用，不能关机' : '关机'} disabled={!!busy || keepAlive} tone="danger" onClick={() => onAction('stop')}>{busy === 'stop' ? <LoaderCircle className="spin" /> : <Power />}</IconButton>}
+          {account.instance_status === 'Running' && <IconButton label="关机" disabled={!!busy} tone="danger" onClick={() => onAction('stop')}>{busy === 'stop' ? <LoaderCircle className="spin" /> : <Power />}</IconButton>}
         </div>
       </footer>
     </article>
@@ -672,7 +674,7 @@ function AboutSettings({ notify }: { notify: (message: string, tone?: Toast['ton
       setChecking(false)
     }
   }
-  return <div className="settings-section about-section"><SectionTitle icon={<Info />} title="关于 CDT Monitor" subtitle="PROJECT INFORMATION" /><div className="about-version"><div><span>当前版本</span><b>{info?.version || '加载中...'}</b><small>{info?.commit && info.commit !== 'unknown' ? `${info.commit} · ${info.built_at}` : '构建信息未知'}</small></div><button className="button button--secondary button--small" onClick={() => void checkVersion()} disabled={checking}>{checking ? <LoaderCircle className="spin" /> : <RefreshCw />}检查更新</button></div>{info?.latest_version && <p className="inline-hint">GitHub 最新版本：{info.latest_version}{info.latest_version === info.version ? '，当前已是最新版本' : '，请查看发布页获取更新'}</p>}<div className="about-links"><a href="https://github.com/wang4386/CDT-Monitor" target="_blank" rel="noreferrer"><SiteFavicon domain="github.com" label="GitHub" /><span><b>GitHub 仓库</b><small>源代码、Issue 与 Release</small></span><ExternalLink /></a><a href="https://qninq.cn" target="_blank" rel="noreferrer"><SiteFavicon domain="qninq.cn" label="qninq.cn" /><span><b>作者博客</b><small>qninq.cn</small></span><ExternalLink /></a><a href="https://www.nodeseek.com/" target="_blank" rel="noreferrer"><SiteFavicon domain="nodeseek.com" label="NodeSeek" /><span><b>NodeSeek</b><small>社区交流</small></span><ExternalLink /></a><a href="https://linux.do/" target="_blank" rel="noreferrer"><SiteFavicon domain="linux.do" label="linux.do" /><span><b>Linux.do</b><small>技术社区交流</small></span><ExternalLink /></a></div></div>
+  return <div className="settings-section about-section"><SectionTitle icon={<Info />} title="关于 CDT Monitor" subtitle="PROJECT INFORMATION" /><div className="about-version"><div><span>当前版本</span><b>{info?.version || '加载中...'}</b><small>{info?.commit && info.commit !== 'unknown' ? `${info.commit} · ${info.built_at}` : '构建信息未知'}</small></div><button className="button button--secondary button--small" onClick={() => void checkVersion()} disabled={checking}>{checking ? <LoaderCircle className="spin" /> : <RefreshCw />}检查更新</button></div>{info?.latest_version && <p className="inline-hint">GitHub 最新版本：{info.latest_version}{info.latest_version === info.version ? '，当前已是最新版本' : '，请查看发布页获取更新'}</p>}<div className="about-links"><a href="https://github.com/P0me1oo/CDT-Monitor" target="_blank" rel="noreferrer"><SiteFavicon domain="github.com" label="GitHub" /><span><b>GitHub 仓库</b><small>源代码、Issue 与 Release</small></span><ExternalLink /></a><a href="https://github.com/wang4386/CDT-Monitor" target="_blank" rel="noreferrer"><SiteFavicon domain="github.com" label="GitHub" /><span><b>原项目</b><small>fork 自 wang4386/CDT-Monitor</small></span><ExternalLink /></a><a href="https://www.nodeseek.com/" target="_blank" rel="noreferrer"><SiteFavicon domain="nodeseek.com" label="NodeSeek" /><span><b>NodeSeek</b><small>社区交流</small></span><ExternalLink /></a><a href="https://linux.do/" target="_blank" rel="noreferrer"><SiteFavicon domain="linux.do" label="linux.do" /><span><b>Linux.do</b><small>技术社区交流</small></span><ExternalLink /></a></div></div>
 }
 
 function SiteFavicon({ domain, label }: { domain: string; label: string }) {

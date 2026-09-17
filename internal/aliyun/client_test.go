@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wang4386/CDT-Monitor/internal/domain"
+	"github.com/P0me1oo/CDT-Monitor/internal/domain"
 )
 
 func TestTrafficClass(t *testing.T) {

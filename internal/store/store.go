@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/wang4386/CDT-Monitor/internal/security"
+	"github.com/P0me1oo/CDT-Monitor/internal/security"
 	_ "modernc.org/sqlite"
 )
 

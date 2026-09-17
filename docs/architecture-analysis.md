@@ -218,7 +218,7 @@ internal/
 
 - `SchedulePolicy`：日计划、跨午夜时间窗、时区、补偿执行。
 - `ThresholdPolicy`：阈值比较、停机模式、只告警或停机并通知、重复通知策略。
-- `KeepAlivePolicy`：保活开关、计划时间窗、超阈值优先级、过渡状态保护。
+- `KeepAlivePolicy`：保活开关、计划时间窗、超阈值优先级、过渡状态保护、手动关机后的保活暂停。
 - `InstanceActionPolicy`：手动操作、自动操作和过渡状态的冲突规则。
 - `BillingPolicy`：余额和实例账单 6 小时缓存、按需或后台刷新、币种和站点映射。
 

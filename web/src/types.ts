@@ -45,6 +45,7 @@ export type AccountSummary = {
   instance_status: string
   last_updated: string
   stale: boolean
+  keepalive_paused: boolean
   monthly_cost?: number
   balance?: number
   currency?: string

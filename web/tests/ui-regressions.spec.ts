@@ -184,10 +184,10 @@ test('about update check falls back to the browser GitHub request', async ({ pag
   await page.route('**/api/v1/system/info**', (route) => {
     const check = new URL(route.request().url()).searchParams.get('check') === '1'
     return route.fulfill({ json: check
-      ? { version: 'v2.0.2', commit: 'test', built_at: new Date().toISOString(), repository: 'https://github.com/wang4386/CDT-Monitor', release_url: 'https://github.com/wang4386/CDT-Monitor/releases', check_error: '暂时无法检查 GitHub Release' }
-      : { version: 'v2.0.2', commit: 'test', built_at: new Date().toISOString(), repository: 'https://github.com/wang4386/CDT-Monitor', release_url: 'https://github.com/wang4386/CDT-Monitor/releases' } })
+      ? { version: 'v2.0.2', commit: 'test', built_at: new Date().toISOString(), repository: 'https://github.com/P0me1oo/CDT-Monitor', release_url: 'https://github.com/P0me1oo/CDT-Monitor/releases', check_error: '暂时无法检查 GitHub Release' }
+      : { version: 'v2.0.2', commit: 'test', built_at: new Date().toISOString(), repository: 'https://github.com/P0me1oo/CDT-Monitor', release_url: 'https://github.com/P0me1oo/CDT-Monitor/releases' } })
   })
-  await page.route('https://api.github.com/repos/wang4386/CDT-Monitor/releases/latest', (route) => route.fulfill({ headers: { 'access-control-allow-origin': '*' }, json: { tag_name: 'v2.0.3' } }))
+  await page.route('https://api.github.com/repos/P0me1oo/CDT-Monitor/releases/latest', (route) => route.fulfill({ headers: { 'access-control-allow-origin': '*' }, json: { tag_name: 'v2.0.3' } }))
 
   await page.goto('/')
   await page.getByRole('button', { name: '设置', exact: true }).click()
@@ -237,7 +237,7 @@ test('dashboard billing, history precision and settings remain usable', async ({
       ],
     } })
   })
-  await page.route('**/api/v1/system/info**', (route) => route.fulfill({ json: { version: 'v2.0.1', commit: 'test', built_at: new Date().toISOString(), repository: 'https://github.com/wang4386/CDT-Monitor', release_url: 'https://github.com/wang4386/CDT-Monitor/releases', latest_version: 'v2.0.1' } }))
+  await page.route('**/api/v1/system/info**', (route) => route.fulfill({ json: { version: 'v2.0.1', commit: 'test', built_at: new Date().toISOString(), repository: 'https://github.com/P0me1oo/CDT-Monitor', release_url: 'https://github.com/P0me1oo/CDT-Monitor/releases', latest_version: 'v2.0.1' } }))
   await page.route('**/api/v1/admin/passkeys', (route) => route.fulfill({ json: { passkeys: [] } }))
   let logsCleared = false
   await page.route('**/api/v1/logs**', (route) => {
@@ -394,7 +394,7 @@ test('dashboard billing, history precision and settings remain usable', async ({
   const faviconSources = await page.locator('.about-link__favicon img').evaluateAll((images) => images.map((image) => image.getAttribute('src')))
   expect(faviconSources).toEqual([
     'https://a.favicon.im/github.com',
-    'https://a.favicon.im/qninq.cn',
+    'https://a.favicon.im/github.com',
     'https://a.favicon.im/nodeseek.com',
     'https://a.favicon.im/linux.do',
   ])

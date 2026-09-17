@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wang4386/CDT-Monitor/internal/domain"
-	"github.com/wang4386/CDT-Monitor/internal/security"
+	"github.com/P0me1oo/CDT-Monitor/internal/domain"
+	"github.com/P0me1oo/CDT-Monitor/internal/security"
 )
 
 const minAPIIntervalSeconds = 30
@@ -365,7 +365,7 @@ func boolInt(value bool) int {
 }
 
 func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,access_key_id,access_key_secret,region_id,instance_id,max_traffic,schedule_enabled,start_time,stop_time,traffic_used,instance_status,updated_at,last_keep_alive_at,remark,site_type FROM accounts WHERE deleted_at=0 ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,access_key_id,access_key_secret,region_id,instance_id,max_traffic,schedule_enabled,start_time,stop_time,traffic_used,instance_status,updated_at,last_keep_alive_at,keepalive_paused_until,remark,site_type FROM accounts WHERE deleted_at=0 ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +375,7 @@ func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 		var a domain.Account
 		var secret string
 		var schedule, updated, keepAlive int64
-		if err = rows.Scan(&a.ID, &a.AccessKeyID, &secret, &a.RegionID, &a.InstanceID, &a.MaxTraffic, &schedule, &a.StartTime, &a.StopTime, &a.TrafficUsed, &a.InstanceStatus, &updated, &keepAlive, &a.Remark, &a.SiteType); err != nil {
+		if err = rows.Scan(&a.ID, &a.AccessKeyID, &secret, &a.RegionID, &a.InstanceID, &a.MaxTraffic, &schedule, &a.StartTime, &a.StopTime, &a.TrafficUsed, &a.InstanceStatus, &updated, &keepAlive, &a.KeepAlivePausedUntil, &a.Remark, &a.SiteType); err != nil {
 			return nil, err
 		}
 		secret, err = s.Decrypt(secret)
@@ -428,5 +428,11 @@ func (s *Store) UpdateRuntime(ctx context.Context, id int64, traffic float64, st
 
 func (s *Store) UpdateKeepAliveAt(ctx context.Context, id int64, at time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE accounts SET last_keep_alive_at=? WHERE id=?`, at.Unix(), id)
+	return err
+}
+
+// SetKeepAlivePause 写入保活暂停截止时间，0 表示恢复保活。
+func (s *Store) SetKeepAlivePause(ctx context.Context, id int64, until int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE accounts SET keepalive_paused_until=? WHERE id=?`, until, id)
 	return err
 }
