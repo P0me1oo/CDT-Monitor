@@ -12,6 +12,7 @@ CDT Monitor 是一个用于阿里云 CDT 流量监控、ECS 实例自动化控�
 - 可配置流量阈值，支持“停机并通知”和“仅通知”。
 - 普通停机 `KeepCharging` 和节省停机 `StopCharging`。
 - 每日定时开关机，任务延迟或进程重启后提供短窗口补偿。
+- 多台 ECS 按固定时段轮换，自动更新 Cloudflare 灰云 A 记录；达到全局流量告警阈值立即节省停机，并由下一台未超限机器接班。
 - 抢占式实例保活，阈值熔断优先于保活。
 - 保活启用时仍可手动关机；关机后自动暂停该实例的保活，到下一次定时开机时恢复。
 - Web 控制台手动开机、关机和刷新。
@@ -122,6 +123,28 @@ Windows：
 | `CDT_WORKERS` | `4` | 后台任务并发数 |
 | `TZ` | 系统时区 | 容器环境时区；业务时区以控制台设置为准 |
 
+## 轮换运行（v2.2.0）
+
+CDT Monitor 部署在独立、持续运行的服务器上。在控制台打开“轮换运行”，填写完整域名、Cloudflare API Token，添加至少两台已配置的机器，并设置每天的开始、结束时间。机器数量不限制为两台；“平均分配时段”可生成初始时间表，再按需要调整。
+
+- 时间使用系统设置中的业务时区，必须连续覆盖 24 小时，不能有重叠或空档。同一机器只能出现一次。结束时间早于开始时间表示跨午夜，午夜填写 `00:00`。
+- Token 需要目标 Zone 的 `Zone Read` 和 `DNS Edit` 权限。Token 加密保存，接口不返回原文；编辑时留空保留原 Token。程序自动查找 Zone，不需要手填 Zone ID。
+- 当前支持公网 IPv4 和灰云 A 记录。无 A 记录时自动创建；已有唯一 A 记录时更新 IP，TTL 设为 60 秒。多条 A、AAAA、CNAME、NS 或橙云记录会阻止启用，避免部分访问绕过轮换。建议使用专用子域名。
+- 阿里云凭据除现有查询和启停权限外，还需 `ecs:DescribeInstances`，用于读取指定实例的状态和公网 IPv4（支持 EIP）。以 `Running` 且已有公网 IPv4 为就绪条件，不检查代理端口。
+- 正常轮换会在下一时段前两分钟尝试开机，到时段边界确认新机器就绪后更新 DNS。旧机器至少保留五分钟；原 DNS TTL 更长时，按原 TTL 等待后执行 `StopCharging`。因此实际运行时间包含交接重叠。
+- 流量限制沿用“每台配置的流量上限 × 全局告警阈值”，不另设阈值。轮换组即使全局选择“仅通知”或“普通停机”，也会在检测到超限后执行节省停机，优先于 DNS 交接等待。比如上限 200 GB、阈值 95%，达到 190 GB 时跳过该机器。
+- 超限时按时间表向后寻找未超限机器，提前接班不移动原时间表；两台及以上均可连续跳过。所有机器都超限时全部节省停机并通知，保留 DNS 记录，后续查询确认流量恢复后按时间表恢复运行。流量查询失败的机器不会被自动启动。
+- 轮换接管成员的原定时开关机与保活，阻止直接手动开关机。修改正在运行的轮换计划或成员信息前先停用；停用不会关机或改 DNS，原定时与保活规则恢复生效。
+- 下一台启动失败或 DNS 更新失败时，保留未超限的旧机器运行并重试；已超限的机器仍立即发出节省停机指令。状态、交接期限写入数据库，监控进程重启后继续处理。通知使用现有通知渠道。
+
+轮换任务约每 15 秒检查一次，实际间隔受 API 耗时影响；CDT 查询沿用最长约 45 秒的客户端缓存，云端统计也可能延迟。“立即停机”指检测到超限后立即发送停机请求，不代表云端流量实时断流。灰云 DNS 存在客户端缓存，现有代理连接不能迁移，不能保证切换无中断。
+
+轮换只管理所选 ECS 和域名，不同步机器上的服务配置。各台机器需事先部署好相同代理入口并设置开机自启动。提前接班、交接重叠和失败重试可能增加运行时间，本功能不判断账单抹零资格。
+
+接口：`GET /api/v1/rotation` 读取配置与状态；`PUT /api/v1/rotation` 保存或启停计划，均要求管理员登录和现有写请求 CSRF 校验。
+
+实现依据：[Cloudflare DNS 更新接口](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/edit/)、[阿里云 DescribeInstances](https://www.alibabacloud.com/help/en/ecs/developer-reference/api-ecs-2014-05-26-describeinstances)。
+
 ## 从 PHP 版本升级
 
 1. 停止旧容器或 PHP Cron，避免两个版本同时执行自动化任务。
@@ -223,7 +246,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cdt-monitor ./cmd/cdt-monit
 | Workflow | 触发条件 | 输出 |
 | --- | --- | --- |
 | `CI` | `dev`/`main` push、PR | 前端构建、Go race test、vet、Linux build |
-| `Automatic Release` | `main` push 或手动 | 自动计算 patch 版本、创建 tag 并调用正式发布流程 |
+| `Automatic Release` | `main` push 或手动 | 优先使用高于现有 tag 的 `web/package.json` 版本，否则递增 patch，创建 tag 并调用正式发布流程 |
 | `Release Binaries` | 自动发布、`v*.*.*` tag 或手动 | Linux/Windows/macOS 二进制、SHA-256 校验和及 GitHub Release |
 | `Container Images` | `dev`/`main`/tag | 发布 GHCR 的 linux/amd64、linux/arm64 镜像 |
 | `Android Widget` | 仅手动触发 | Android 原型 APK/AAB workflow artifact |

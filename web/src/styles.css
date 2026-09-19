@@ -31,6 +31,42 @@
   --duration-base: 320ms;
 }
 
+.rotation-page { max-width: 1200px; }
+.rotation-heading, .rotation-section-title { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.rotation-heading { margin-bottom: 28px; }
+.rotation-heading h1 { font-size: 2rem; margin: 24px 0 0; }
+.rotation-enabled { font-weight: 650; }
+.rotation-section { padding: 28px; border-radius: 20px; margin-bottom: 24px; }
+.rotation-section h2 { font-size: 1.25rem; margin-bottom: 20px; }
+.rotation-section-title h2 { margin: 0; }
+.rotation-section-title { margin-bottom: 20px; }
+.rotation-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.rotation-status { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin: 0; }
+.rotation-status dt { color: var(--muted); margin-bottom: 10px; }
+.rotation-status dd { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+.rotation-message { margin: 24px 0 0; }
+.rotation-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 20px; }
+.rotation-page label { display: grid; gap: 8px; min-width: 0; font-size: 14px; font-weight: 600; }
+.rotation-page input, .rotation-page select { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--ink); }
+.rotation-slot { display: grid; grid-template-columns: minmax(160px, 2fr) minmax(110px, 1fr) minmax(110px, 1fr) auto auto; align-items: end; gap: 16px; padding: 18px 0; border-top: 1px solid var(--line); }
+.rotation-slot > span { align-self: center; }
+.rotation-slots { margin-bottom: 20px; }
+.rotation-over { color: var(--red); }
+.rotation-footer { display: flex; justify-content: space-between; align-items: start; gap: 24px; padding-bottom: 32px; }
+.rotation-footer > p { max-width: 580px; }
+.rotation-footer > div { display: flex; gap: 12px; flex-shrink: 0; }
+@media (max-width: 760px) {
+  .rotation-section { padding: 20px; }
+  .rotation-status, .rotation-form-grid { grid-template-columns: 1fr 1fr; }
+  .rotation-slot { grid-template-columns: 1fr 1fr; }
+  .rotation-slot > label:first-child { grid-column: 1 / -1; }
+  .rotation-footer { flex-direction: column; }
+}
+@media (max-width: 420px) {
+  .rotation-form-grid { grid-template-columns: 1fr; }
+  .rotation-section-title { align-items: start; flex-direction: column; }
+}
+
 * { box-sizing: border-box; }
 html { min-width: 320px; min-height: 100%; background: var(--bg); scrollbar-gutter: stable; }
 body { margin: 0; min-width: 320px; min-height: 100vh; overflow-x: hidden; background: var(--bg); }

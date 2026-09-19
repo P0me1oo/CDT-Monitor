@@ -19,12 +19,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-webauthn/webauthn/protocol"
-	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/P0me1oo/CDT-Monitor/internal/domain"
 	"github.com/P0me1oo/CDT-Monitor/internal/engine"
 	"github.com/P0me1oo/CDT-Monitor/internal/security"
 	"github.com/P0me1oo/CDT-Monitor/internal/store"
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 type principal struct {
@@ -94,6 +94,8 @@ func New(st *store.Store, eng *engine.Engine, assets fs.FS, logger *slog.Logger,
 	mux.Handle("GET /api/v1/widget/summary", s.require("widget:read", http.HandlerFunc(s.widgetSummary)))
 	mux.Handle("GET /api/v1/config", s.require("admin", http.HandlerFunc(s.getConfig)))
 	mux.Handle("PUT /api/v1/config", s.require("admin", http.HandlerFunc(s.saveConfig)))
+	mux.Handle("GET /api/v1/rotation", s.require("admin", http.HandlerFunc(s.getRotation)))
+	mux.Handle("PUT /api/v1/rotation", s.require("admin", http.HandlerFunc(s.saveRotation)))
 	mux.Handle("GET /api/v1/accounts/{id}/history", s.require("widget:read", http.HandlerFunc(s.history)))
 	mux.Handle("POST /api/v1/accounts/refresh", s.require("instance:control", http.HandlerFunc(s.refreshAll)))
 	mux.Handle("POST /api/v1/accounts/{id}/refresh", s.require("instance:control", http.HandlerFunc(s.refresh)))
@@ -563,7 +565,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyConfigDefaults(&config)
-	if err := s.store.SaveConfig(r.Context(), config); err != nil {
+	if err := s.engine.SaveConfig(r.Context(), config); err != nil {
 		writeError(w, http.StatusBadRequest, "config_failed", err.Error())
 		return
 	}

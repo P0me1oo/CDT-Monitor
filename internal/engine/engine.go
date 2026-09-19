@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/P0me1oo/CDT-Monitor/internal/aliyun"
+	"github.com/P0me1oo/CDT-Monitor/internal/cloudflare"
 	"github.com/P0me1oo/CDT-Monitor/internal/domain"
 	"github.com/P0me1oo/CDT-Monitor/internal/notify"
 	"github.com/P0me1oo/CDT-Monitor/internal/security"
@@ -26,6 +27,7 @@ const (
 	JobRefreshAccount  = "refresh_account"
 	JobControlInstance = "control_instance"
 	JobTestNotify      = "test_notification"
+	JobRotation        = "rotation"
 )
 
 type Engine struct {
@@ -38,6 +40,8 @@ type Engine struct {
 	workers      int
 	started      sync.Once
 	accountLocks sync.Map
+	automationMu sync.RWMutex
+	dns          rotationDNS
 }
 
 var ErrMonitorBusy = errors.New("monitor scheduler lease is held by another process")
@@ -47,7 +51,7 @@ func New(st *store.Store, provider aliyun.Provider, notifier *notify.Service, lo
 		workers = 4
 	}
 	owner, _ := security.NewToken(12)
-	return &Engine{store: st, provider: provider, notify: notifier, logger: logger, owner: owner, wake: make(chan struct{}, 1), workers: workers}
+	return &Engine{store: st, provider: provider, notify: notifier, logger: logger, owner: owner, wake: make(chan struct{}, 1), workers: workers, dns: cloudflare.New()}
 }
 
 func (e *Engine) Start(ctx context.Context) {
@@ -121,6 +125,15 @@ func (e *Engine) enqueueMonitorCycle(ctx context.Context, now time.Time) error {
 		return err
 	}
 	minute := now.UTC().Format("200601021504")
+	rotation, err := e.store.GetRotation(ctx)
+	if err != nil {
+		return err
+	}
+	if rotation.Enabled {
+		if _, err = e.Enqueue(ctx, JobRotation, 0, `{}`, "rotation"); err != nil {
+			return err
+		}
+	}
 	for _, account := range accounts {
 		uniqueKey := fmt.Sprintf("monitor:%d:%s", account.ID, minute)
 		if _, err = e.Enqueue(ctx, JobMonitorAccount, account.ID, `{}`, uniqueKey); err != nil {
@@ -164,6 +177,8 @@ func (e *Engine) runJob(ctx context.Context, job domain.Job) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
 	switch job.Type {
+	case JobRotation:
+		return e.runRotation(ctx, time.Time{})
 	case JobMonitorAccount:
 		return e.processAccount(ctx, job.AccountID, false)
 	case JobRefreshAccount:
@@ -196,6 +211,13 @@ func (e *Engine) runJob(ctx context.Context, job domain.Job) (string, error) {
 }
 
 func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool) (string, error) {
+	e.automationMu.RLock()
+	defer e.automationMu.RUnlock()
+	rotation, rotationErr := e.store.GetRotation(ctx)
+	if rotationErr != nil {
+		return "", rotationErr
+	}
+	managed := rotation.Contains(accountID)
 	lock := e.accountLock(accountID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -219,7 +241,7 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 
 	actions := make([]string, 0, 2)
 	statusChangedBySchedule := false
-	if account.ScheduleEnabled {
+	if account.ScheduleEnabled && !managed {
 		if dueWithin(now, account.StartTime, 10*time.Minute) {
 			changed, runErr := e.executeScheduledAction(ctx, config, account, secret, "start", now)
 			if runErr != nil {
@@ -296,7 +318,7 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 	if !overThreshold {
 		_ = e.store.DeleteActionEvent(ctx, thresholdKey)
 	}
-	if overThreshold && due {
+	if overThreshold && due && !managed {
 		key := thresholdKey
 		recorded, recordErr := e.store.RecordActionEvent(ctx, key, account.ID, "threshold", "detected", fmt.Sprintf("%.2f%%", percentage))
 		if recordErr != nil {
@@ -320,7 +342,7 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 		}
 	}
 
-	if config.KeepAlive && !overThreshold && !statusChangedBySchedule && !account.KeepAlivePaused(now) && status == domain.StatusStopped && (!account.ScheduleEnabled || inTimeRange(now.Format("15:04"), account.StartTime, account.StopTime)) {
+	if !managed && config.KeepAlive && !overThreshold && !statusChangedBySchedule && !account.KeepAlivePaused(now) && status == domain.StatusStopped && (!account.ScheduleEnabled || inTimeRange(now.Format("15:04"), account.StartTime, account.StopTime)) {
 		key := fmt.Sprintf("keepalive:%d:%s", account.ID, now.Format("200601021504"))
 		fresh, recordErr := e.store.RecordActionEvent(ctx, key, account.ID, "keepalive", "attempting", "")
 		if recordErr != nil {
@@ -390,6 +412,15 @@ func (e *Engine) executeScheduledAction(ctx context.Context, config domain.Confi
 }
 
 func (e *Engine) control(ctx context.Context, accountID int64, action, source string) (string, error) {
+	e.automationMu.RLock()
+	defer e.automationMu.RUnlock()
+	rotation, err := e.store.GetRotation(ctx)
+	if err != nil {
+		return "", err
+	}
+	if rotation.Contains(accountID) {
+		return "", errors.New("该机器由轮换计划管理，请先在轮换运行页面停用计划，再手动开关机")
+	}
 	lock := e.accountLock(accountID)
 	lock.Lock()
 	defer lock.Unlock()

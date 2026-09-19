@@ -9,6 +9,7 @@ import {
   Trash2, UserCog, Webhook, X, Zap,
 } from 'lucide-react'
 import { APIError, api, fetchLatestReleaseFromGitHub, waitForJob } from './api'
+import RotationPage from './RotationPage'
 import {
   APIKeyRecord, Account, AccountSummary, Config, History, Job, LogEntry, PasskeyRecord,
   StatusResponse, SystemInfo, defaultConfig, emptyAccount,
@@ -45,6 +46,12 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
   const [historyAccount, setHistoryAccount] = useState<AccountSummary | null>(null)
+  const [rotationOpen, setRotationOpen] = useState(() => location.hash === '#rotation')
+  useEffect(() => {
+    const change = () => setRotationOpen(location.hash === '#rotation')
+    window.addEventListener('hashchange', change)
+    return () => window.removeEventListener('hashchange', change)
+  }, [])
 
   const notify = useCallback((message: string, tone: Toast['tone'] = 'info') => {
     const id = Date.now() + Math.random()
@@ -104,16 +111,17 @@ export default function App() {
 
   return (
     <>
-      <Dashboard
+      {rotationOpen ? <RotationPage config={config!} status={status} onBack={() => { location.hash = ''; setRotationOpen(false) }} /> : <Dashboard
         status={status}
         config={config!}
         onRefresh={refreshStatus}
         onSettings={() => setSettingsOpen(true)}
         onAdmin={() => setAdminOpen(true)}
+        onRotation={() => { location.hash = 'rotation'; setRotationOpen(true) }}
         onHistory={setHistoryAccount}
         notify={notify}
         onLogout={() => setPhase('login')}
-      />
+      />}
       {settingsOpen && config && (
         <SettingsPanel
           initial={config}
@@ -269,8 +277,9 @@ function Login({ onComplete }: { onComplete: () => Promise<void> }) {
   )
 }
 
-function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onHistory, notify, onLogout }: {
+function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onRotation, onHistory, notify, onLogout }: {
   status: StatusResponse; config: Config; onRefresh: (fresh?: boolean) => Promise<void>; onSettings: () => void; onAdmin: () => void; onHistory: (account: AccountSummary) => void; notify: (message: string, tone?: Toast['tone']) => void; onLogout: () => void
+  onRotation: () => void
 }) {
   const [busy, setBusy] = useState<Record<number, string>>({})
   const [mobileMenu, setMobileMenu] = useState(false)
@@ -327,6 +336,7 @@ function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onHistory, 
       <header className="topbar">
         <div className="brand-lockup"><BrandMark /><div><b>CDT MONITOR</b><span>CONTROL PLANE</span></div></div>
         <div id="dashboard-actions" className={`topbar-actions ${mobileMenu ? 'open' : ''}`} aria-busy={refreshingAll}>
+          <button className="button button--secondary" onClick={onRotation}>轮换运行</button>
           <div className={`heartbeat ${heartbeatAge > 180 ? 'heartbeat--warn' : ''}`}><i />{heartbeatAge > 180 ? '监控任务延迟' : '自动化运行中'}</div>
           <IconButton label={refreshingAll ? '正在强制刷新全部实例' : '强制刷新全部实例'} disabled={refreshingAll} onClick={() => void refreshAll()}>{refreshingAll ? <LoaderCircle className="spin" size={18} /> : <RefreshCw size={18} />}</IconButton>
           <IconButton label="设置" onClick={openSettings}><Settings size={18} /></IconButton>
