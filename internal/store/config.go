@@ -91,6 +91,8 @@ func (s *Store) GetConfig(ctx context.Context) (domain.Config, error) {
 		APIInterval:        apiInterval,
 		EnableBilling:      boolSetting(settings, "enable_billing", false),
 		Timezone:           valueOr(settings, "timezone", "Asia/Shanghai"),
+		EnableDailyReport:  boolSetting(settings, "enable_daily_report", false),
+		DailyReportTime:    valueOr(settings, "daily_report_time", "22:00"),
 		Accounts:           accounts,
 		Notifications: domain.NotificationConfig{
 			Email: domain.EmailConfig{
@@ -205,6 +207,8 @@ func (s *Store) saveConfig(ctx context.Context, config domain.Config, setup bool
 			"api_interval":           strconv.Itoa(config.APIInterval),
 			"enable_billing":         strconv.FormatBool(config.EnableBilling),
 			"timezone":               config.Timezone,
+			"enable_daily_report":    strconv.FormatBool(config.EnableDailyReport),
+			"daily_report_time":      config.DailyReportTime,
 			"notify_email_enabled":   strconv.FormatBool(config.Notifications.Email.Enabled),
 			"notify_email":           config.Notifications.Email.To,
 			"notify_host":            config.Notifications.Email.Host,
@@ -273,6 +277,16 @@ func putSettingTx(ctx context.Context, tx *sql.Tx, key, value string) error {
 	return err
 }
 
+func nullBoolInt(value *bool) any {
+	if value == nil {
+		return nil
+	}
+	if *value {
+		return 1
+	}
+	return 0
+}
+
 func saveAccountsTx(ctx context.Context, tx *sql.Tx, s *Store, accounts []domain.Account) error {
 	activeRows, err := tx.QueryContext(ctx, `SELECT id, access_key_id, region_id, instance_id, access_key_secret FROM accounts WHERE deleted_at=0`)
 	if err != nil {
@@ -283,6 +297,7 @@ func saveAccountsTx(ctx context.Context, tx *sql.Tx, s *Store, accounts []domain
 	}
 	byID := map[int64]existing{}
 	byComposite := map[string]existing{}
+	byAKSecret := map[string]string{}
 	for activeRows.Next() {
 		var id int64
 		var row existing
@@ -293,22 +308,49 @@ func saveAccountsTx(ctx context.Context, tx *sql.Tx, s *Store, accounts []domain
 		row.id = fmt.Sprint(id)
 		byID[id] = row
 		byComposite[row.key+"|"+row.region+"|"+row.instance] = row
+		if row.secret != "" && byAKSecret[row.key] == "" {
+			byAKSecret[row.key] = row.secret
+		}
 	}
 	activeRows.Close()
+
+	plainAKSecret := map[string]string{}
+	for _, acc := range accounts {
+		if strings.TrimSpace(acc.AccessKeySecret) != "" && plainAKSecret[acc.AccessKeyID] == "" {
+			plainAKSecret[acc.AccessKeyID] = strings.TrimSpace(acc.AccessKeySecret)
+		}
+	}
+
 	kept := make(map[int64]bool)
 	for _, account := range accounts {
 		if strings.TrimSpace(account.AccessKeyID) == "" || strings.TrimSpace(account.RegionID) == "" {
 			return errors.New("account access_key_id and region_id are required")
 		}
 		row, found := byID[account.ID]
-		if !found {
-			row, found = byComposite[account.AccessKeyID+"|"+account.RegionID+"|"+account.InstanceID]
+		if !found && account.ID == 0 {
+			compRow, compFound := byComposite[account.AccessKeyID+"|"+account.RegionID+"|"+account.InstanceID]
+			if compFound {
+				compID, _ := strconv.ParseInt(compRow.id, 10, 64)
+				if !kept[compID] {
+					row = compRow
+					found = true
+				}
+			}
 		}
 		secret := account.AccessKeySecret
-		if secret == "" && found {
-			secret, err = s.Decrypt(row.secret)
-			if err != nil {
-				return err
+		if secret == "" {
+			if plain, ok := plainAKSecret[account.AccessKeyID]; ok && plain != "" {
+				secret = plain
+			} else if found && row.secret != "" {
+				secret, err = s.Decrypt(row.secret)
+				if err != nil {
+					return err
+				}
+			} else if enc, ok := byAKSecret[account.AccessKeyID]; ok && enc != "" {
+				secret, err = s.Decrypt(enc)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		if secret == "" {
@@ -322,17 +364,21 @@ func saveAccountsTx(ctx context.Context, tx *sql.Tx, s *Store, accounts []domain
 		if siteType != "international" {
 			siteType = "china"
 		}
+		dailyReportTime := account.DailyReportTime
+		if dailyReportTime == "" {
+			dailyReportTime = "00:00"
+		}
 		if found {
 			id, _ := strconv.ParseInt(row.id, 10, 64)
-			_, err = tx.ExecContext(ctx, `UPDATE accounts SET access_key_id=?, access_key_secret=?, region_id=?, instance_id=?, max_traffic=?, schedule_enabled=?, start_time=?, stop_time=?, remark=?, site_type=?, deleted_at=0 WHERE id=?`,
-				account.AccessKeyID, encryptedSecret, account.RegionID, account.InstanceID, account.MaxTraffic, boolInt(account.ScheduleEnabled), account.StartTime, account.StopTime, account.Remark, siteType, id)
+			_, err = tx.ExecContext(ctx, `UPDATE accounts SET access_key_id=?, access_key_secret=?, region_id=?, instance_id=?, max_traffic=?, schedule_enabled=?, start_time=?, stop_time=?, remark=?, site_type=?, keep_alive=?, shutdown_mode=?, daily_report=?, daily_report_time=?, deleted_at=0 WHERE id=?`,
+				account.AccessKeyID, encryptedSecret, account.RegionID, account.InstanceID, account.MaxTraffic, boolInt(account.ScheduleEnabled), account.StartTime, account.StopTime, account.Remark, siteType, nullBoolInt(account.KeepAlive), account.ShutdownMode, nullBoolInt(account.DailyReport), dailyReportTime, id)
 			if err != nil {
 				return err
 			}
 			kept[id] = true
 		} else {
-			result, err := tx.ExecContext(ctx, `INSERT INTO accounts(access_key_id,access_key_secret,region_id,instance_id,max_traffic,schedule_enabled,start_time,stop_time,remark,site_type,instance_status) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-				account.AccessKeyID, encryptedSecret, account.RegionID, account.InstanceID, account.MaxTraffic, boolInt(account.ScheduleEnabled), account.StartTime, account.StopTime, account.Remark, siteType, domain.StatusUnknown)
+			result, err := tx.ExecContext(ctx, `INSERT INTO accounts(access_key_id,access_key_secret,region_id,instance_id,max_traffic,schedule_enabled,start_time,stop_time,remark,site_type,instance_status,keep_alive,shutdown_mode,daily_report,daily_report_time) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				account.AccessKeyID, encryptedSecret, account.RegionID, account.InstanceID, account.MaxTraffic, boolInt(account.ScheduleEnabled), account.StartTime, account.StopTime, account.Remark, siteType, domain.StatusUnknown, nullBoolInt(account.KeepAlive), account.ShutdownMode, nullBoolInt(account.DailyReport), dailyReportTime)
 			if err != nil {
 				return err
 			}
@@ -365,7 +411,7 @@ func boolInt(value bool) int {
 }
 
 func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,access_key_id,access_key_secret,region_id,instance_id,max_traffic,schedule_enabled,start_time,stop_time,traffic_used,instance_status,updated_at,last_keep_alive_at,keepalive_paused_until,remark,site_type FROM accounts WHERE deleted_at=0 ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,access_key_id,access_key_secret,region_id,instance_id,max_traffic,schedule_enabled,start_time,stop_time,traffic_used,instance_status,updated_at,last_keep_alive_at,keepalive_paused_until,remark,site_type,keep_alive,shutdown_mode,daily_report,daily_report_time FROM accounts WHERE deleted_at=0 ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +421,9 @@ func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 		var a domain.Account
 		var secret string
 		var schedule, updated, keepAlive int64
-		if err = rows.Scan(&a.ID, &a.AccessKeyID, &secret, &a.RegionID, &a.InstanceID, &a.MaxTraffic, &schedule, &a.StartTime, &a.StopTime, &a.TrafficUsed, &a.InstanceStatus, &updated, &keepAlive, &a.KeepAlivePausedUntil, &a.Remark, &a.SiteType); err != nil {
+		var keepAliveCol, dailyReportCol sql.NullInt64
+		var shutdownModeCol, dailyReportTimeCol sql.NullString
+		if err = rows.Scan(&a.ID, &a.AccessKeyID, &secret, &a.RegionID, &a.InstanceID, &a.MaxTraffic, &schedule, &a.StartTime, &a.StopTime, &a.TrafficUsed, &a.InstanceStatus, &updated, &keepAlive, &a.KeepAlivePausedUntil, &a.Remark, &a.SiteType, &keepAliveCol, &shutdownModeCol, &dailyReportCol, &dailyReportTimeCol); err != nil {
 			return nil, err
 		}
 		secret, err = s.Decrypt(secret)
@@ -390,9 +438,32 @@ func (s *Store) ListAccounts(ctx context.Context) ([]domain.Account, error) {
 		if keepAlive > 0 {
 			a.LastKeepAliveAt = time.Unix(keepAlive, 0).UTC()
 		}
+		if keepAliveCol.Valid {
+			v := keepAliveCol.Int64 == 1
+			a.KeepAlive = &v
+		}
+		a.ShutdownMode = shutdownModeCol.String
+		if dailyReportCol.Valid {
+			v := dailyReportCol.Int64 == 1
+			a.DailyReport = &v
+		}
+		if dailyReportTimeCol.Valid && dailyReportTimeCol.String != "" {
+			a.DailyReportTime = dailyReportTimeCol.String
+		} else {
+			a.DailyReportTime = "00:00"
+		}
 		accounts = append(accounts, a)
 	}
 	return accounts, rows.Err()
+}
+
+func (s *Store) UpdateAccountSettings(ctx context.Context, id int64, keepAlive *bool, shutdownMode string, scheduleEnabled bool, startTime, stopTime string, dailyReport *bool, dailyReportTime string) error {
+	if dailyReportTime == "" {
+		dailyReportTime = "00:00"
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE accounts SET keep_alive=?, shutdown_mode=?, schedule_enabled=?, start_time=?, stop_time=?, daily_report=?, daily_report_time=? WHERE id=? AND deleted_at=0`,
+		nullBoolInt(keepAlive), shutdownMode, boolInt(scheduleEnabled), startTime, stopTime, nullBoolInt(dailyReport), dailyReportTime, id)
+	return err
 }
 
 func (s *Store) GetAccount(ctx context.Context, id int64) (domain.Account, error) {

@@ -367,3 +367,233 @@ INSERT INTO traffic_daily(access_key_id,traffic,recorded_at) VALUES('legacy-ak',
 		t.Fatalf("daily account_id=%d err=%v", accountID, err)
 	}
 }
+
+func TestCopyAccountReusesSecretUnderSameAK(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	trueVal := true
+	falseVal := false
+
+	config := domain.Config{
+		AdminPassword:     "Strong-Password-42!",
+		TrafficThreshold:  95,
+		ShutdownMode:      "KeepCharging",
+		ThresholdAction:   "stop_and_notify",
+		APIInterval:       600,
+		Timezone:          "Asia/Shanghai",
+		EnableDailyReport: true,
+		DailyReportTime:   "23:30",
+		Accounts: []domain.Account{
+			{
+				AccessKeyID:     "LTAIshared",
+				AccessKeySecret: "super-secret-key",
+				RegionID:        "cn-hongkong",
+				InstanceID:      "i-source",
+				MaxTraffic:      200,
+				SiteType:        "china",
+				Remark:          "源实例",
+				KeepAlive:       &trueVal,
+				ShutdownMode:    "StopCharging",
+				ScheduleEnabled: true,
+				StartTime:       "08:00",
+				StopTime:        "22:00",
+				DailyReport:     &trueVal,
+			},
+		},
+	}
+	if err = st.Setup(ctx, config); err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	accounts, err := st.ListAccounts(ctx)
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("expected 1 account: %v", err)
+	}
+	source := accounts[0]
+	if source.KeepAlive == nil || !*source.KeepAlive || source.ShutdownMode != "StopCharging" || source.DailyReport == nil || !*source.DailyReport {
+		t.Fatalf("source account settings mismatch: %+v", source)
+	}
+
+	// Copy instance: id=0, AccessKeySecret="", same AK
+	duplicate := domain.Account{
+		ID:              0,
+		AccessKeyID:     "LTAIshared",
+		AccessKeySecret: "", // Empty secret! Must reuse from existing account
+		RegionID:        "cn-shanghai",
+		InstanceID:      "i-copied",
+		MaxTraffic:      100,
+		SiteType:        "china",
+		Remark:          "源实例 (副本)",
+		KeepAlive:       &falseVal,
+		ShutdownMode:    "KeepCharging",
+		ScheduleEnabled: false,
+		DailyReport:     &falseVal,
+	}
+
+	config.Accounts = append(config.Accounts, duplicate)
+	config.Accounts[0].AccessKeySecret = "" // Also empty when submitting full config
+	if err = st.SaveConfig(ctx, config); err != nil {
+		t.Fatalf("SaveConfig failed on copied account: %v", err)
+	}
+
+	updated, err := st.ListAccounts(ctx)
+	if err != nil || len(updated) != 2 {
+		t.Fatalf("expected 2 accounts: %v", err)
+	}
+
+	// Verify both accounts have valid secrets
+	sec0, err0 := st.AccountSecret(ctx, updated[0].ID)
+	sec1, err1 := st.AccountSecret(ctx, updated[1].ID)
+	if err0 != nil || err1 != nil || sec0 != "super-secret-key" || sec1 != "super-secret-key" {
+		t.Fatalf("secret reuse failed: sec0=%s, sec1=%s", sec0, sec1)
+	}
+
+	if updated[1].KeepAlive == nil || *updated[1].KeepAlive != false || updated[1].ShutdownMode != "KeepCharging" || updated[1].DailyReport == nil || *updated[1].DailyReport != false {
+		t.Fatalf("copied account settings mismatch: %+v", updated[1])
+	}
+}
+
+func TestUpdateAccountSettingsDirectly(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	config := domain.Config{
+		AdminPassword:    "Strong-Password-42!",
+		TrafficThreshold: 95,
+		ShutdownMode:     "KeepCharging",
+		ThresholdAction:  "stop_and_notify",
+		APIInterval:      600,
+		Timezone:         "Asia/Shanghai",
+		Accounts: []domain.Account{
+			{AccessKeyID: "LTAI1", AccessKeySecret: "secret", RegionID: "cn-hongkong", InstanceID: "i-1", MaxTraffic: 100},
+		},
+	}
+	if err = st.Setup(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	accounts, _ := st.ListAccounts(ctx)
+	id := accounts[0].ID
+
+	newKeepAlive := true
+	newDailyReport := false
+	if err = st.UpdateAccountSettings(ctx, id, &newKeepAlive, "StopCharging", true, "09:30", "21:30", &newDailyReport, "01:15"); err != nil {
+		t.Fatalf("UpdateAccountSettings failed: %v", err)
+	}
+
+	loaded, err := st.GetAccount(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.KeepAlive == nil || !*loaded.KeepAlive {
+		t.Fatal("KeepAlive was not updated")
+	}
+	if loaded.ShutdownMode != "StopCharging" {
+		t.Fatalf("ShutdownMode was not updated: %s", loaded.ShutdownMode)
+	}
+	if !loaded.ScheduleEnabled || loaded.StartTime != "09:30" || loaded.StopTime != "21:30" {
+		t.Fatalf("Schedule was not updated: %+v", loaded)
+	}
+	if loaded.DailyReport == nil || *loaded.DailyReport != false {
+		t.Fatal("DailyReport was not updated")
+	}
+}
+
+func TestTrafficSnapshotRoundtrip(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	if err = st.RecordTrafficSnapshot(ctx, 101, "2026-09-19", "start", 12.34, "08:00"); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.RecordTrafficSnapshot(ctx, 101, "2026-09-19", "stop", 15.67, "22:00"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := st.GetTrafficSnapshot(ctx, 101, "2026-09-19")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.StartTraffic != 12.34 || snap.StopTraffic != 15.67 || snap.StartTime != "08:00" || snap.StopTime != "22:00" {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+}
+
+func TestTraffic24HoursAgoAndAroundTime(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	t24Ago := now.Add(-24 * time.Hour)
+	t12Ago := now.Add(-12 * time.Hour)
+
+	_ = st.AddTrafficStats(ctx, 201, 10.0, t24Ago)
+	_ = st.AddTrafficStats(ctx, 201, 12.5, t12Ago)
+	_ = st.AddTrafficStats(ctx, 201, 15.292, now)
+
+	traffic24, ok := st.Traffic24HoursAgo(ctx, 201, now)
+	if !ok || traffic24 != 10.0 {
+		t.Fatalf("expected 10.0 from 24h ago, got %v (ok=%v)", traffic24, ok)
+	}
+
+	trafficAround, ok := st.TrafficAroundTime(ctx, 201, t12Ago)
+	if !ok || trafficAround != 12.5 {
+		t.Fatalf("expected 12.5 around 12h ago, got %v (ok=%v)", trafficAround, ok)
+	}
+}
+
+func TestTrafficAroundTimeIgnoresSamplesOutsideWindow(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	start := time.Date(2026, 9, 24, 8, 0, 0, 0, loc)
+	if err = st.AddTrafficStats(ctx, 202, 51.98, start.Add(-8*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AddTrafficStats(ctx, 202, 54.44, start.Add(16*time.Hour+10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if traffic, ok := st.TrafficAroundTime(ctx, 202, start); ok {
+		t.Fatalf("sample outside the start window was accepted: %v", traffic)
+	}
+}
+
+func TestTraffic24HoursAgoDoesNotUseCurrentDayDailySampleNearMidnight(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	location := time.UTC
+	now := time.Date(2026, 9, 23, 23, 56, 0, 0, location)
+	previousDayStart := time.Date(2026, 9, 22, 0, 0, 0, 0, location).Unix()
+	currentDayStart := time.Date(2026, 9, 23, 0, 0, 0, 0, location).Unix()
+	if _, err = st.db.ExecContext(ctx, `INSERT INTO traffic_daily(account_id,traffic,recorded_at) VALUES(?,?,?),(?,?,?)`, 202, 10.0, previousDayStart, 202, 15.0, currentDayStart); err != nil {
+		t.Fatal(err)
+	}
+
+	traffic, ok := st.Traffic24HoursAgo(ctx, 202, now)
+	if !ok || traffic != 10.0 {
+		t.Fatalf("expected previous day's baseline 10.0, got %v (ok=%v)", traffic, ok)
+	}
+}

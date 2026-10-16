@@ -70,8 +70,81 @@ DELETE FROM sessions WHERE expires_at<unixepoch();
 DELETE FROM login_attempts WHERE attempt_time<unixepoch()-86400;
 DELETE FROM jobs WHERE status IN ('completed','failed') AND updated_at<unixepoch()-604800;
 DELETE FROM notification_outbox WHERE status IN ('sent','failed') AND updated_at<unixepoch()-2592000;
+DELETE FROM daily_traffic_snapshots WHERE updated_at<unixepoch()-2592000;
 `)
 	return err
+}
+
+type TrafficSnapshot struct {
+	AccountID    int64
+	DateStr      string
+	StartTraffic float64
+	StopTraffic  float64
+	StartTime    string
+	StopTime     string
+}
+
+func (s *Store) RecordTrafficSnapshot(ctx context.Context, accountID int64, dateStr, action string, traffic float64, timeStr string) error {
+	now := time.Now().Unix()
+	if action == "start" {
+		_, err := s.db.ExecContext(ctx, `INSERT INTO daily_traffic_snapshots(account_id, date_str, start_traffic, start_time, updated_at) VALUES(?,?,?,?,?) ON CONFLICT(account_id, date_str) DO UPDATE SET start_traffic=excluded.start_traffic, start_time=excluded.start_time, updated_at=excluded.updated_at`,
+			accountID, dateStr, traffic, timeStr, now)
+		return err
+	}
+	if action == "stop" {
+		_, err := s.db.ExecContext(ctx, `INSERT INTO daily_traffic_snapshots(account_id, date_str, stop_traffic, stop_time, updated_at) VALUES(?,?,?,?,?) ON CONFLICT(account_id, date_str) DO UPDATE SET stop_traffic=excluded.stop_traffic, stop_time=excluded.stop_time, updated_at=excluded.updated_at`,
+			accountID, dateStr, traffic, timeStr, now)
+		return err
+	}
+	return nil
+}
+
+func (s *Store) GetTrafficSnapshot(ctx context.Context, accountID int64, dateStr string) (TrafficSnapshot, error) {
+	var snap TrafficSnapshot
+	err := s.db.QueryRowContext(ctx, `SELECT account_id, date_str, start_traffic, stop_traffic, start_time, stop_time FROM daily_traffic_snapshots WHERE account_id=? AND date_str=?`, accountID, dateStr).
+		Scan(&snap.AccountID, &snap.DateStr, &snap.StartTraffic, &snap.StopTraffic, &snap.StartTime, &snap.StopTime)
+	return snap, err
+}
+
+func (s *Store) EarliestTrafficSince(ctx context.Context, accountID int64, since int64) (float64, bool) {
+	var traffic float64
+	err := s.db.QueryRowContext(ctx, `SELECT traffic FROM traffic_hourly WHERE account_id=? AND recorded_at>=? ORDER BY recorded_at ASC LIMIT 1`, accountID, since).Scan(&traffic)
+	if err == nil {
+		return traffic, true
+	}
+	err = s.db.QueryRowContext(ctx, `SELECT traffic FROM traffic_daily WHERE account_id=? AND recorded_at<=? ORDER BY recorded_at DESC LIMIT 1`, accountID, since).Scan(&traffic)
+	if err == nil {
+		return traffic, true
+	}
+	return 0, false
+}
+
+func (s *Store) Traffic24HoursAgo(ctx context.Context, accountID int64, now time.Time) (float64, bool) {
+	target := now.Add(-24 * time.Hour).Unix()
+	var traffic float64
+	err := s.db.QueryRowContext(ctx, `SELECT traffic FROM traffic_hourly WHERE account_id=? AND recorded_at BETWEEN ? AND ? ORDER BY ABS(recorded_at-?) ASC LIMIT 1`, accountID, target-3600, target+3600, target).Scan(&traffic)
+	if err == nil {
+		return traffic, true
+	}
+	err = s.db.QueryRowContext(ctx, `SELECT traffic FROM traffic_daily WHERE account_id=? AND recorded_at<=? ORDER BY recorded_at DESC LIMIT 1`, accountID, target).Scan(&traffic)
+	if err == nil {
+		return traffic, true
+	}
+	var earliestTraffic float64
+	var earliestTime int64
+	err = s.db.QueryRowContext(ctx, `SELECT traffic, recorded_at FROM traffic_hourly WHERE account_id=? ORDER BY recorded_at ASC LIMIT 1`, accountID).Scan(&earliestTraffic, &earliestTime)
+	if err == nil && now.Unix()-earliestTime >= 900 {
+		return earliestTraffic, true
+	}
+	return 0, false
+}
+
+func (s *Store) TrafficAroundTime(ctx context.Context, accountID int64, targetTime time.Time) (float64, bool) {
+	target := targetTime.Unix()
+	var traffic float64
+	err := s.db.QueryRowContext(ctx, `SELECT traffic FROM traffic_hourly WHERE account_id=? AND recorded_at BETWEEN ? AND ? ORDER BY ABS(recorded_at-?) ASC, recorded_at ASC LIMIT 1`,
+		accountID, target-2700, target+2700, target).Scan(&traffic)
+	return traffic, err == nil
 }
 
 func (s *Store) AddTrafficStats(ctx context.Context, accountID int64, traffic float64, now time.Time) error {

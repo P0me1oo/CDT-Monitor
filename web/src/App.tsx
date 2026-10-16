@@ -3,13 +3,14 @@ import type { ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, Bell, Check, ChevronDown, ChevronRight, CircleDollarSign,
-  Clock3, Cloud, Copy, Database, ExternalLink, Eye, EyeOff, FileClock, Fingerprint, Gauge,
+  Clock3, Cloud, Copy, Database, ExternalLink, Eye, EyeOff, FileClock, FileText, Fingerprint, Gauge,
   Globe2, History as HistoryIcon, Info, KeyRound, LoaderCircle, LockKeyhole, LogOut,
   Mail, Menu, Play, Plus, Power, RefreshCw, Save, Search, Server, Settings, ShieldCheck,
   Trash2, UserCog, Webhook, X, Zap,
 } from 'lucide-react'
 import { APIError, api, fetchLatestReleaseFromGitHub, waitForJob } from './api'
 import RotationPage from './RotationPage'
+import TimePicker from './TimePicker'
 import {
   APIKeyRecord, Account, AccountSummary, Config, History, Job, LogEntry, PasskeyRecord,
   StatusResponse, SystemInfo, defaultConfig, emptyAccount,
@@ -119,6 +120,7 @@ export default function App() {
         onAdmin={() => setAdminOpen(true)}
         onRotation={() => { location.hash = 'rotation'; setRotationOpen(true) }}
         onHistory={setHistoryAccount}
+        onConfigChange={setConfig}
         notify={notify}
         onLogout={() => setPhase('login')}
       />}
@@ -277,10 +279,11 @@ function Login({ onComplete }: { onComplete: () => Promise<void> }) {
   )
 }
 
-function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onRotation, onHistory, notify, onLogout }: {
-  status: StatusResponse; config: Config; onRefresh: (fresh?: boolean) => Promise<void>; onSettings: () => void; onAdmin: () => void; onHistory: (account: AccountSummary) => void; notify: (message: string, tone?: Toast['tone']) => void; onLogout: () => void
+function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onRotation, onHistory, onConfigChange, notify, onLogout }: {
+  status: StatusResponse; config: Config; onRefresh: (fresh?: boolean) => Promise<void>; onSettings: () => void; onAdmin: () => void; onHistory: (account: AccountSummary) => void; onConfigChange?: (config: Config) => void; notify: (message: string, tone?: Toast['tone']) => void; onLogout: () => void
   onRotation: () => void
 }) {
+  const [configuringAccount, setConfiguringAccount] = useState<Account | null>(null)
   const [busy, setBusy] = useState<Record<number, string>>({})
   const [mobileMenu, setMobileMenu] = useState(false)
   const [refreshingAll, setRefreshingAll] = useState(false)
@@ -288,6 +291,40 @@ function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onRotation,
   const warning = status.accounts.filter((account) => account.over_threshold).length
   const used = status.accounts.reduce((sum, account) => sum + account.flow_used, 0)
   const heartbeatAge = status.system_last_run ? Math.floor((Date.now() - new Date(status.system_last_run).getTime()) / 1000) : Infinity
+
+  const openInstanceSettings = (accountSummary: AccountSummary) => {
+    const found = config.accounts.find((a) => a.id === accountSummary.id)
+    if (found) {
+      setConfiguringAccount({
+        ...found,
+        keep_alive: accountSummary.keep_alive ?? found.keep_alive,
+        shutdown_mode: (accountSummary.shutdown_mode as Account['shutdown_mode']) ?? found.shutdown_mode ?? '',
+        schedule_enabled: accountSummary.schedule_enabled ?? found.schedule_enabled,
+        start_time: accountSummary.start_time ?? found.start_time,
+        stop_time: accountSummary.stop_time ?? found.stop_time,
+        daily_report: accountSummary.daily_report ?? found.daily_report,
+        daily_report_time: accountSummary.daily_report_time ?? found.daily_report_time ?? '00:00',
+      })
+    } else {
+      setConfiguringAccount({
+        id: accountSummary.id,
+        access_key_id: '',
+        secret_configured: true,
+        region_id: accountSummary.region,
+        instance_id: '',
+        max_traffic: accountSummary.flow_total,
+        schedule_enabled: accountSummary.schedule_enabled || false,
+        start_time: accountSummary.start_time || '08:00',
+        stop_time: accountSummary.stop_time || '23:30',
+        remark: accountSummary.remark,
+        site_type: 'china',
+        keep_alive: accountSummary.keep_alive,
+        shutdown_mode: (accountSummary.shutdown_mode as Account['shutdown_mode']) || '',
+        daily_report: accountSummary.daily_report,
+        daily_report_time: accountSummary.daily_report_time || '00:00',
+      })
+    }
+  }
 
   const runAction = async (account: AccountSummary, action: 'start' | 'stop' | 'refresh') => {
     setBusy((value) => ({ ...value, [account.id]: action }))
@@ -359,17 +396,31 @@ function Dashboard({ status, config, onRefresh, onSettings, onAdmin, onRotation,
         <button className="empty-state" onClick={onSettings}><Cloud /><h3>添加第一个云端实例</h3><p>进入设置完成 AccessKey 与实例信息配置</p><span>打开设置<ChevronRight size={16} /></span></button>
       ) : (
         <section className="account-grid">
-          {status.accounts.map((account) => <AccountCard key={account.id} account={account} busy={refreshingAll ? 'refresh' : busy[account.id]} keepAlive={config.keep_alive} billingEnabled={config.enable_billing} onAction={(action) => void runAction(account, action)} onHistory={() => onHistory(account)} />)}
+          {status.accounts.map((account) => <AccountCard key={account.id} account={account} busy={refreshingAll ? 'refresh' : busy[account.id]} keepAlive={config.keep_alive} billingEnabled={config.enable_billing} onAction={(action) => void runAction(account, action)} onConfigure={() => openInstanceSettings(account)} onHistory={() => onHistory(account)} />)}
         </section>
+      )}
+      {configuringAccount && (
+        <InstanceSettingsModal
+          account={configuringAccount}
+          onClose={() => setConfiguringAccount(null)}
+          onSaved={(updated) => {
+            const nextAccounts = config.accounts.map((a) => (a.id === updated.id ? { ...a, ...updated } : a))
+            if (onConfigChange) onConfigChange({ ...config, accounts: nextAccounts })
+            setConfiguringAccount(null)
+            void onRefresh(true)
+          }}
+          notify={notify}
+        />
       )}
     </main>
   )
 }
 
-function AccountCard({ account, busy, keepAlive, billingEnabled, onAction, onHistory }: { account: AccountSummary; busy?: string; keepAlive: boolean; billingEnabled: boolean; onAction: (action: 'start' | 'stop' | 'refresh') => void; onHistory: () => void }) {
+function AccountCard({ account, busy, keepAlive, billingEnabled, onAction, onConfigure, onHistory }: { account: AccountSummary; busy?: string; keepAlive: boolean; billingEnabled: boolean; onAction: (action: 'start' | 'stop' | 'refresh') => void; onConfigure: () => void; onHistory: () => void }) {
   const statusTone = statusClass(account.instance_status)
   const currency = account.currency === 'USD' ? '$' : '¥'
   const hasBilling = account.monthly_cost !== undefined || account.balance !== undefined
+  const effectiveKeepAlive = account.keep_alive != null ? account.keep_alive : keepAlive
   return (
     <article className={`glass-card account-card ${account.over_threshold ? 'account-card--alert' : ''}`}>
       <header className="account-card__header">
@@ -378,7 +429,7 @@ function AccountCard({ account, busy, keepAlive, billingEnabled, onAction, onHis
         <div className="account-card__side">
           <div className="status-pill-group">
             <div className={`status-pill ${statusTone}`}><i />{statusLabel(account.instance_status)}</div>
-            {keepAlive && account.keepalive_paused && <div className="status-pill"><i />保活已暂停</div>}
+            {effectiveKeepAlive && account.keepalive_paused && <div className="status-pill"><i />保活已暂停</div>}
           </div>
           {billingEnabled && <div className="account-billing" aria-label="账单与余额"><div><span>本月费用</span><b>{account.monthly_cost === undefined ? '待同步' : `${currency}${account.monthly_cost.toFixed(2)}`}</b></div><div><span>账户余额</span><b>{account.balance === undefined ? '待同步' : `${currency}${account.balance.toFixed(2)}`}</b></div><small className={account.billing_error ? 'billing-error' : ''}>{account.billing_error || (hasBilling ? '已同步' : '待同步')}</small></div>}
         </div>
@@ -389,12 +440,151 @@ function AccountCard({ account, busy, keepAlive, billingEnabled, onAction, onHis
       <footer className="account-card__footer">
         <span className={account.stale ? 'stale' : ''}><Clock3 size={14} />{account.last_updated ? formatTime(account.last_updated) : '等待首次同步'}</span>
         <div className="control-group">
+          <IconButton label="实例设置" onClick={onConfigure}><Settings /></IconButton>
           <IconButton label="刷新实例" disabled={!!busy} onClick={() => onAction('refresh')}>{busy === 'refresh' ? <LoaderCircle className="spin" /> : <RefreshCw />}</IconButton>
           {account.instance_status === 'Stopped' && <IconButton label="开机" disabled={!!busy} tone="positive" onClick={() => onAction('start')}>{busy === 'start' ? <LoaderCircle className="spin" /> : <Play />}</IconButton>}
           {account.instance_status === 'Running' && <IconButton label="关机" disabled={!!busy} tone="danger" onClick={() => onAction('stop')}>{busy === 'stop' ? <LoaderCircle className="spin" /> : <Power />}</IconButton>}
         </div>
       </footer>
     </article>
+  )
+}
+
+function InstanceSettingsModal({
+  account,
+  onClose,
+  onSaved,
+  notify,
+}: {
+  account: Account
+  onClose: () => void
+  onSaved: (account: Account) => void
+  notify: (message: string, tone?: Toast['tone']) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [form, setForm] = useState<{
+    keep_alive?: boolean | null
+    shutdown_mode: '' | 'KeepCharging' | 'StopCharging'
+    schedule_enabled: boolean
+    start_time: string
+    stop_time: string
+    daily_report?: boolean | null
+    daily_report_time: string
+  }>({
+    keep_alive: account.keep_alive,
+    shutdown_mode: (account.shutdown_mode as '' | 'KeepCharging' | 'StopCharging') || '',
+    schedule_enabled: account.schedule_enabled,
+    start_time: account.start_time || '08:00',
+    stop_time: account.stop_time || '23:30',
+    daily_report: account.daily_report,
+    daily_report_time: account.daily_report_time || '00:00',
+  })
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const payload = {
+        keep_alive: form.keep_alive,
+        shutdown_mode: form.shutdown_mode || 'default',
+        schedule_enabled: form.schedule_enabled,
+        start_time: form.start_time,
+        stop_time: form.stop_time,
+        daily_report: form.daily_report,
+        daily_report_time: form.daily_report_time || '00:00',
+      }
+      const updated = await api<Account>(`/api/v1/accounts/${account.id}/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      notify('实例配置已保存', 'success')
+      onSaved(updated)
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '保存失败', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const keepAliveVal = form.keep_alive == null ? 'default' : form.keep_alive ? 'enabled' : 'disabled'
+  const shutdownVal = !form.shutdown_mode ? 'default' : form.shutdown_mode
+  const dailyReportVal = form.daily_report == null ? 'default' : form.daily_report ? 'enabled' : 'disabled'
+
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true" aria-label="实例配置">
+      <div className="modal-scrim" onClick={onClose} />
+      <section className="glass-panel instance-settings-modal">
+        <header>
+          <div>
+            <p className="eyebrow">INSTANCE PREFERENCES</p>
+            <h2>{account.remark || account.instance_id || '实例配置'}</h2>
+          </div>
+          <IconButton label="关闭" onClick={onClose}><X /></IconButton>
+        </header>
+        <div className="instance-settings-modal__body">
+          <div className="field">
+            <label>抢占式保活</label>
+            <Segmented
+              value={keepAliveVal}
+              options={[
+                ['default', '跟随全局'],
+                ['enabled', '单独开启'],
+                ['disabled', '单独关闭'],
+              ]}
+              onChange={(val) => setForm({ ...form, keep_alive: val === 'default' ? null : val === 'enabled' })}
+            />
+          </div>
+          <div className="field">
+            <label>默认停机方式</label>
+            <Segmented
+              value={shutdownVal}
+              options={[
+                ['default', '跟随全局'],
+                ['KeepCharging', '普通停机'],
+                ['StopCharging', '节省停机'],
+              ]}
+              onChange={(val) => setForm({ ...form, shutdown_mode: val === 'default' ? '' : (val as '' | 'KeepCharging' | 'StopCharging') })}
+            />
+          </div>
+          <ToggleRow
+            title="每日定时开关机"
+            icon={<Clock3 />}
+            checked={form.schedule_enabled}
+            onChange={(checked) => setForm({ ...form, schedule_enabled: checked })}
+          />
+          {form.schedule_enabled && (
+            <div className="form-grid" style={{ marginTop: '4px' }}>
+              <TimePicker label="开机时间" value={form.start_time} onChange={(value) => setForm({ ...form, start_time: value })} />
+              <TimePicker label="关机时间" value={form.stop_time} onChange={(value) => setForm({ ...form, stop_time: value })} />
+            </div>
+          )}
+          <div className="field">
+            <label>参与日报推送</label>
+            <Segmented
+              value={dailyReportVal}
+              options={[
+                ['default', '跟随全局'],
+                ['enabled', '单独开启'],
+                ['disabled', '单独关闭'],
+              ]}
+              onChange={(val) => setForm({ ...form, daily_report: val === 'default' ? null : val === 'enabled' })}
+            />
+            {form.schedule_enabled && <ScheduleReportNote stopTime={form.stop_time} />}
+          </div>
+          {!form.schedule_enabled && (
+            <div>
+              <TimePicker label="日报推送时间" value={form.daily_report_time || '00:00'} onChange={(value) => setForm({ ...form, daily_report_time: value })} />
+              <DailyReportNote time={form.daily_report_time} />
+            </div>
+          )}
+        </div>
+        <footer>
+          <button className="button button--secondary" onClick={onClose} disabled={busy}>取消</button>
+          <button className="button button--primary" onClick={() => void save()} disabled={busy}>
+            {busy ? <LoaderCircle className="spin" /> : <Save />}保存配置
+          </button>
+        </footer>
+      </section>
+    </div>
   )
 }
 
@@ -459,6 +649,7 @@ function GeneralSettings({ config, onChange }: { config: Config; onChange: (conf
     <div className="toggle-list">
       <ToggleRow title="抢占式实例保活" icon={<Activity />} checked={config.keep_alive} onChange={(checked) => onChange({ ...config, keep_alive: checked })} />
       <ToggleRow title="定时任务通知" icon={<Bell />} checked={config.enable_schedule_notification} onChange={(checked) => onChange({ ...config, enable_schedule_notification: checked })} />
+      <ToggleRow title="每日消费与流量日报" icon={<FileText />} checked={config.enable_daily_report} onChange={(checked) => onChange({ ...config, enable_daily_report: checked })} />
       <ToggleRow title="账单与余额" icon={<CircleDollarSign />} checked={config.enable_billing} onChange={(checked) => onChange({ ...config, enable_billing: checked })} />
     </div>
   </div>
@@ -467,8 +658,23 @@ function GeneralSettings({ config, onChange }: { config: Config; onChange: (conf
 function AccountSettings({ config, onChange }: { config: Config; onChange: (config: Config) => void }) {
   const update = (index: number, account: Account) => { const accounts = [...config.accounts]; accounts[index] = account; onChange({ ...config, accounts }) }
   const remove = (index: number) => onChange({ ...config, accounts: config.accounts.filter((_, current) => current !== index) })
+  const clone = (index: number) => {
+    const source = config.accounts[index]
+    const copy: Account = {
+      ...source,
+      id: 0,
+      instance_id: '',
+      remark: source.remark ? `${source.remark} (副本)` : '',
+      secret_configured: source.secret_configured || Boolean(source.access_key_secret),
+      access_key_secret: source.access_key_secret || '',
+      daily_report_time: source.daily_report_time || '00:00',
+    }
+    const accounts = [...config.accounts]
+    accounts.splice(index + 1, 0, copy)
+    onChange({ ...config, accounts })
+  }
   return <div className="settings-section"><div className="section-title-row"><SectionTitle icon={<Server />} title="云端实例" subtitle="ALIYUN ACCOUNTS" /><button className="button button--secondary button--small" onClick={() => onChange({ ...config, accounts: [...config.accounts, emptyAccount()] })}><Plus />添加实例</button></div>
-    <div className="account-settings-list">{config.accounts.length === 0 && <div className="subtle-empty"><Database />尚未配置实例</div>}{config.accounts.map((account, index) => <div className="account-editor" key={account.id || `new-${index}`}><div className="account-editor__head"><span>{account.remark || `实例 ${index + 1}`}</span><IconButton label="删除" tone="danger" onClick={() => remove(index)}><Trash2 /></IconButton></div><AccountFields account={account} onChange={(next) => update(index, next)} /></div>)}</div>
+    <div className="account-settings-list">{config.accounts.length === 0 && <div className="subtle-empty"><Database />尚未配置实例</div>}{config.accounts.map((account, index) => <div className="account-editor" key={account.id || `new-${index}`}><div className="account-editor__head"><span>{account.remark || `实例 ${index + 1}`}</span><div className="account-editor__actions"><IconButton label="复制" onClick={() => clone(index)}><Copy /></IconButton><IconButton label="删除" tone="danger" onClick={() => remove(index)}><Trash2 /></IconButton></div></div><AccountFields account={account} onChange={(next) => update(index, next)} /></div>)}</div>
   </div>
 }
 
@@ -482,13 +688,60 @@ function AccountFields({ account, onChange, compact = false }: { account: Accoun
     <SelectField label="站点类型" value={account.site_type} options={[{ value: 'china', label: '中国站', meta: 'CNY' }, { value: 'international', label: '国际站', meta: 'USD' }]} onChange={(value) => onChange({ ...account, site_type: value as Account['site_type'] })} />
     <Field label="备注"><input value={account.remark} onChange={(event) => onChange({ ...account, remark: event.target.value })} placeholder="香港主节点" /></Field>
     <ToggleRow title="每日定时开关机" icon={<Clock3 />} checked={account.schedule_enabled} onChange={(checked) => onChange({ ...account, schedule_enabled: checked })} />
-    {account.schedule_enabled && <><Field label="开机时间"><input type="time" value={account.start_time} onChange={(event) => onChange({ ...account, start_time: event.target.value })} /></Field><Field label="关机时间"><input type="time" value={account.stop_time} onChange={(event) => onChange({ ...account, stop_time: event.target.value })} /></Field></>}
+    {account.schedule_enabled && <><TimePicker label="开机时间" value={account.start_time} onChange={(value) => onChange({ ...account, start_time: value })} /><TimePicker label="关机时间" value={account.stop_time} onChange={(value) => onChange({ ...account, stop_time: value })} /></>}
+    {!compact && (
+      <div className="account-fields__full">
+        <div className="field">
+          <label>参与日报推送</label>
+          <Segmented
+            value={account.daily_report == null ? 'default' : account.daily_report ? 'enabled' : 'disabled'}
+            options={[
+              ['default', '跟随全局'],
+              ['enabled', '单独开启'],
+              ['disabled', '单独关闭'],
+            ]}
+            onChange={(val) => onChange({
+              ...account,
+              daily_report: val === 'default' ? null : val === 'enabled',
+            })}
+          />
+          {account.schedule_enabled && <ScheduleReportNote stopTime={account.stop_time} />}
+        </div>
+        {!account.schedule_enabled && (
+          <div>
+            <TimePicker label="日报推送时间" value={account.daily_report_time || '00:00'} onChange={(value) => onChange({ ...account, daily_report_time: value })} />
+            <DailyReportNote time={account.daily_report_time} />
+          </div>
+        )}
+      </div>
+    )}
   </div>
+}
+
+function ScheduleReportNote({ stopTime }: { stopTime: string }) {
+  return <p className="report-time-note"><Info size={15} aria-hidden="true" /><span>参与日报时，将在{stopTime ? <>每日 <strong>{stopTime}</strong> 关机时</> : '每日关机时'}单独推送本次运行的流量与账单。</span></p>
+}
+
+function DailyReportNote({ time }: { time?: string }) {
+  return <p className="report-time-note"><Info size={15} aria-hidden="true" /><span>每日 <strong>{time || '00:00'}</strong> 推送前 24 小时的流量与账单；同一时间的普通日报合并发送。</span></p>
 }
 
 function NotificationSettings({ config, onChange, notify }: { config: Config; onChange: (config: Config) => void; notify: (message: string, tone?: Toast['tone']) => void }) {
   const [channel, setChannel] = useState<'email' | 'telegram' | 'webhook'>('email')
   const [testing, setTesting] = useState(false)
+  const [testingDaily, setTestingDaily] = useState(false)
+  const testDailyReport = async () => {
+    setTestingDaily(true)
+    try {
+      const job = await api<Job>('/api/v1/notifications/daily-report', { method: 'POST', body: '{}' })
+      await waitForJob(job.id)
+      notify('日报测试已发送至已启用的通知渠道', 'success')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '发送日报测试失败', 'error')
+    } finally {
+      setTestingDaily(false)
+    }
+  }
   const [template, setTemplate] = useState('')
   const [modal, setModal] = useState<{ provider: string; name: string } | null>(null)
   const [form, setForm] = useState({ key: '', appToken: '', uid: '', token: '', secret: '' })
@@ -526,7 +779,10 @@ function NotificationSettings({ config, onChange, notify }: { config: Config; on
     {channel === 'email' && <div className="form-grid settings-form"><ToggleRow title="启用 Email" icon={<Mail />} checked={n.email.enabled} onChange={(enabled) => onChange({ ...config, notifications: { ...n, email: { ...n.email, enabled } } })} /><Field label="接收邮箱"><input type="email" value={n.email.to} onChange={(event) => onChange({ ...config, notifications: { ...n, email: { ...n.email, to: event.target.value } } })} /></Field><Field label="SMTP Host"><input value={n.email.host} onChange={(event) => onChange({ ...config, notifications: { ...n, email: { ...n.email, host: event.target.value } } })} /></Field><Field label="端口"><input type="number" value={n.email.port} onChange={(event) => onChange({ ...config, notifications: { ...n, email: { ...n.email, port: Number(event.target.value) } } })} /></Field><SelectField label="安全模式" value={n.email.security} options={[{ value: 'ssl', label: 'SSL' }, { value: 'tls', label: 'STARTTLS' }, { value: 'none', label: '无' }]} onChange={(value) => onChange({ ...config, notifications: { ...n, email: { ...n.email, security: value } } })} /><Field label="用户名"><input value={n.email.username} onChange={(event) => onChange({ ...config, notifications: { ...n, email: { ...n.email, username: event.target.value } } })} /></Field><Field label={`密码${n.email.password_configured ? ' · 已配置' : ''}`}><input type="password" value={n.email.password || ''} placeholder={n.email.password_configured ? '留空保持不变' : ''} onChange={(event) => onChange({ ...config, notifications: { ...n, email: { ...n.email, password: event.target.value } } })} /></Field></div>}
     {channel === 'telegram' && <div className="form-grid settings-form"><ToggleRow title="启用 Telegram" icon={<Zap />} checked={n.telegram.enabled} onChange={(enabled) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, enabled } } })} /><Field label={`Bot Token${n.telegram.token_configured ? ' · 已配置' : ''}`}><input type="password" value={n.telegram.token || ''} placeholder={n.telegram.token_configured ? '留空保持不变' : ''} onChange={(event) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, token: event.target.value } } })} /></Field><Field label="Chat ID"><input value={n.telegram.chat_id} onChange={(event) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, chat_id: event.target.value } } })} /></Field><SelectField label="代理类型" value={n.telegram.proxy_type} options={[{ value: 'none', label: '直连' }, { value: 'custom', label: '自定义反代' }, { value: 'socks5', label: 'SOCKS5' }]} onChange={(value) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, proxy_type: value } } })} />{n.telegram.proxy_type === 'custom' && <Field label="反代 URL"><input value={n.telegram.proxy_url} onChange={(event) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, proxy_url: event.target.value } } })} /></Field>}{n.telegram.proxy_type === 'socks5' && <><Field label="代理 IP"><input value={n.telegram.proxy_ip} onChange={(event) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, proxy_ip: event.target.value } } })} /></Field><Field label="代理端口"><input value={n.telegram.proxy_port} onChange={(event) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, proxy_port: event.target.value } } })} /></Field><Field label="代理账号"><input value={n.telegram.proxy_user} onChange={(event) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, proxy_user: event.target.value } } })} /></Field><Field label={`代理密码${n.telegram.proxy_password_configured ? ' · 已配置' : ''}`}><input type="password" value={n.telegram.proxy_pass || ''} onChange={(event) => onChange({ ...config, notifications: { ...n, telegram: { ...n.telegram, proxy_pass: event.target.value } } })} /></Field></>}</div>}
     {channel === 'webhook' && <div className="form-grid settings-form"><ToggleRow title="启用 Webhook" icon={<Webhook />} checked={n.webhook.enabled} onChange={(enabled) => updateWebhook({ enabled })} /><Field label="Webhook URL"><input value={n.webhook.url} onChange={(event) => updateWebhook({ url: event.target.value })} /></Field>{n.webhook.provider === 'dingtalk' && <Field label={`钉钉加签密钥${n.webhook.secret_configured ? ' · 已配置' : ''}`}><input type="password" value={n.webhook.secret || ''} placeholder={n.webhook.secret_configured ? '留空保持不变' : '可选'} onChange={(event) => updateWebhook({ secret: event.target.value })} /></Field>}<SelectField label="请求方式" value={n.webhook.method} options={[{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }]} onChange={(value) => updateWebhook({ method: value })} /><SelectField label="请求类型" value={n.webhook.request_type} options={[{ value: 'JSON', label: 'JSON' }, { value: 'FORM', label: 'FORM' }]} onChange={(value) => updateWebhook({ request_type: value })} /><Field label="自定义 Headers"><textarea value={n.webhook.headers || ''} onChange={(event) => updateWebhook({ headers: event.target.value })} placeholder='{"Authorization":"Bearer …"}' /></Field><Field label="Body 模板"><textarea value={n.webhook.body} onChange={(event) => updateWebhook({ body: event.target.value })} placeholder='{"title":"#TITLE#","message":"#MSG#"}' /></Field></div>}
-    <button className="button button--secondary" disabled={testing} onClick={() => void test()}>{testing ? <LoaderCircle className="spin" /> : <Bell />}发送测试</button>
+    <div className="notification-action-row">
+      <button className="button button--secondary" disabled={testing} onClick={() => void test()}>{testing ? <LoaderCircle className="spin" /> : <Bell />}发送测试</button>
+      <button className="button button--secondary" disabled={testingDaily} onClick={() => void testDailyReport()}>{testingDaily ? <LoaderCircle className="spin" /> : <FileText />}发送日报测试</button>
+    </div>
     {modal && <WebhookTemplateModal name={modal.name} provider={modal.provider} form={form} onChange={setForm} onClose={() => setModal(null)} onApply={applyTemplate} />}
   </div>
 }

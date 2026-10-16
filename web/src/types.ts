@@ -11,6 +11,10 @@ export type Account = {
   stop_time: string
   remark: string
   site_type: 'china' | 'international'
+  keep_alive?: boolean | null
+  shutdown_mode?: '' | 'KeepCharging' | 'StopCharging'
+  daily_report?: boolean | null
+  daily_report_time?: string
 }
 
 export type Config = {
@@ -23,6 +27,8 @@ export type Config = {
   api_interval: number
   enable_billing: boolean
   timezone: string
+  enable_daily_report: boolean
+  daily_report_time: string
   notifications: {
     email: { enabled: boolean; to: string; host: string; port: number; username: string; password?: string; password_configured: boolean; security: string }
     telegram: { enabled: boolean; token?: string; token_configured: boolean; chat_id: string; proxy_type: string; proxy_url: string; proxy_ip: string; proxy_port: string; proxy_user: string; proxy_pass?: string; proxy_password_configured: boolean }
@@ -50,6 +56,13 @@ export type AccountSummary = {
   balance?: number
   currency?: string
   billing_error?: string
+  keep_alive?: boolean | null
+  shutdown_mode?: string
+  schedule_enabled?: boolean
+  start_time?: string
+  stop_time?: string
+  daily_report?: boolean | null
+  daily_report_time?: string
 }
 
 export type StatusResponse = { accounts: AccountSummary[]; system_last_run: string }
@@ -73,6 +86,10 @@ export const emptyAccount = (): Account => ({
   stop_time: '23:30',
   remark: '',
   site_type: 'china',
+  keep_alive: undefined,
+  shutdown_mode: '',
+  daily_report: undefined,
+  daily_report_time: "00:00",
 })
 
 export const defaultConfig = (): Config => ({
@@ -84,6 +101,8 @@ export const defaultConfig = (): Config => ({
   api_interval: 600,
   enable_billing: false,
   timezone: 'Asia/Shanghai',
+  enable_daily_report: false,
+  daily_report_time: '22:00',
   notifications: {
     email: { enabled: false, to: '', host: '', port: 465, username: '', password: '', password_configured: false, security: 'ssl' },
     telegram: { enabled: false, token: '', token_configured: false, chat_id: '', proxy_type: 'none', proxy_url: '', proxy_ip: '', proxy_port: '', proxy_user: '', proxy_pass: '', proxy_password_configured: false },
