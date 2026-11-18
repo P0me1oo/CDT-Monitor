@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test'
 
-for (const width of [1440, 390]) {
-  test(`轮换页面可配置三台机器并保留 Token（${width}）`, async ({ page }, testInfo) => {
+for (const [width, colorScheme] of [[1440, 'light'], [390, 'light'], [1440, 'dark'], [390, 'dark']] as const) {
+  test(`轮换页面可配置三台机器并保留 Token（${width}，${colorScheme}）`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 1000 })
+    await page.emulateMedia({ colorScheme })
     const accounts = [1, 2, 3].map(id => ({ id, remark: `轮换机器 ${id}`, instance_id: `i-${id}`, region_id: 'cn-hongkong', max_traffic: 200 }))
     let rotation = { enabled: false, hostname: 'proxy.example.com', token_configured: true, slots: [] as { account_id: number; start: string; end: string }[] }
     const state = { active_id: 0, ip: '', message: '', error: '', updated_at: '', retire_after: '' }
@@ -26,6 +27,8 @@ for (const width of [1440, 390]) {
     })
     await page.goto('/#rotation')
     await expect(page.getByRole('heading', { name: '轮换运行' })).toBeVisible()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', colorScheme)
+    if (colorScheme === 'dark') await expect(page.locator('.rotation-page input').first()).not.toHaveCSS('background-color', 'rgb(255, 255, 255)')
     await expect(page.getByPlaceholder('已保存，留空保留')).toHaveValue('')
     for (let i = 0; i < 3; i++) await page.getByRole('button', { name: '添加机器' }).click()
     await expect(page.getByRole('button', { name: '添加机器' })).toBeDisabled()

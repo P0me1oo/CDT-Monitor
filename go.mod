@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/go-webauthn/webauthn v0.13.4
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.40.0
 	golang.org/x/net v0.41.0
 	modernc.org/sqlite v1.37.1

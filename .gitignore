@@ -24,6 +24,7 @@ web/playwright-report
 .tmp-*
 *.tsbuildinfo
 android-widget/.gradle/
+android-widget/.kotlin/
 android-widget/local.properties
 android-widget/**/build/
 *.jks

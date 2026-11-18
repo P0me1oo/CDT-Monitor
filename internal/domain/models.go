@@ -14,25 +14,27 @@ const (
 const KeepAlivePauseUntilStart int64 = -1
 
 type Account struct {
-	ID               int64     `json:"id"`
-	AccessKeyID      string    `json:"access_key_id"`
-	AccessKeySecret  string    `json:"access_key_secret,omitempty"`
-	SecretConfigured bool      `json:"secret_configured"`
-	RegionID         string    `json:"region_id"`
-	InstanceID       string    `json:"instance_id"`
-	MaxTraffic       float64   `json:"max_traffic"`
-	ScheduleEnabled  bool      `json:"schedule_enabled"`
-	StartTime        string    `json:"start_time"`
-	StopTime         string    `json:"stop_time"`
-	Remark           string    `json:"remark"`
-	SiteType         string    `json:"site_type"`
-	TrafficUsed      float64   `json:"traffic_used"`
-	InstanceStatus   string    `json:"instance_status"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	LastKeepAliveAt  time.Time `json:"last_keep_alive_at,omitempty"`
-	// KeepAlivePausedUntil 记录手动关机后保活的暂停截止时间。
-	// 0 表示未暂停；正数为 Unix 秒时间戳；KeepAlivePauseUntilStart 表示一直暂停到下一次开机。
-	KeepAlivePausedUntil int64     `json:"keepalive_paused_until,omitempty"`
+	ID                   int64     `json:"id"`
+	AccessKeyID          string    `json:"access_key_id"`
+	AccessKeySecret      string    `json:"access_key_secret,omitempty"`
+	SecretConfigured     bool      `json:"secret_configured"`
+	RegionID             string    `json:"region_id"`
+	InstanceID           string    `json:"instance_id"`
+	PublicIP             string    `json:"-"`
+	PublicIPv6           string    `json:"-"`
+	PublicIPUpdatedAt    time.Time `json:"-"`
+	MaxTraffic           float64   `json:"max_traffic"`
+	ScheduleEnabled      bool      `json:"schedule_enabled"`
+	ScheduleMode         string    `json:"schedule_mode"`
+	StartTime            string    `json:"start_time"`
+	StopTime             string    `json:"stop_time"`
+	Remark               string    `json:"remark"`
+	SiteType             string    `json:"site_type"`
+	TrafficUsed          float64   `json:"traffic_used"`
+	InstanceStatus       string    `json:"instance_status"`
+	UpdatedAt            time.Time `json:"updated_at"`
+	LastKeepAliveAt      time.Time `json:"last_keep_alive_at,omitempty"`
+	KeepAlivePausedUntil int64     `json:"-"`
 	MonthlyCost          *float64  `json:"monthly_cost,omitempty"`
 	Balance              *float64  `json:"balance,omitempty"`
 	Currency             string    `json:"currency,omitempty"`
@@ -42,17 +44,16 @@ type Account struct {
 	ShutdownMode         string    `json:"shutdown_mode"`
 	DailyReport          *bool     `json:"daily_report"`
 	DailyReportTime      string    `json:"daily_report_time"`
+	StartCron            string    `json:"start_cron,omitempty"`
+	StopCron             string    `json:"stop_cron,omitempty"`
 }
 
-// KeepAlivePaused 判断 now 时刻该实例的保活是否处于暂停状态。
+// KeepAlivePaused reports whether a manual stop is still suppressing keep-alive.
 func (a Account) KeepAlivePaused(now time.Time) bool {
 	if a.KeepAlivePausedUntil == 0 {
 		return false
 	}
-	if a.KeepAlivePausedUntil < 0 {
-		return true
-	}
-	return now.Unix() < a.KeepAlivePausedUntil
+	return a.KeepAlivePausedUntil < 0 || now.Unix() < a.KeepAlivePausedUntil
 }
 
 type EmailConfig struct {
@@ -115,31 +116,35 @@ type Config struct {
 }
 
 type AccountSummary struct {
-	ID              int64     `json:"id"`
-	Account         string    `json:"account"`
-	Remark          string    `json:"remark"`
-	Region          string    `json:"region"`
-	RegionName      string    `json:"region_name"`
-	FlowTotal       float64   `json:"flow_total"`
-	FlowUsed        float64   `json:"flow_used"`
-	Percentage      float64   `json:"percentage"`
-	Threshold       int       `json:"threshold"`
-	OverThreshold   bool      `json:"over_threshold"`
-	InstanceStatus  string    `json:"instance_status"`
-	LastUpdated     time.Time `json:"last_updated"`
-	Stale           bool      `json:"stale"`
-	KeepAlivePaused bool      `json:"keepalive_paused"`
-	MonthlyCost     *float64  `json:"monthly_cost,omitempty"`
-	Balance         *float64  `json:"balance,omitempty"`
-	Currency        string    `json:"currency,omitempty"`
-	BillingError    string    `json:"billing_error,omitempty"`
-	KeepAlive       *bool     `json:"keep_alive"`
-	ShutdownMode    string    `json:"shutdown_mode"`
-	ScheduleEnabled bool      `json:"schedule_enabled"`
-	StartTime       string    `json:"start_time,omitempty"`
-	StopTime        string    `json:"stop_time,omitempty"`
-	DailyReport     *bool     `json:"daily_report"`
-	DailyReportTime string    `json:"daily_report_time,omitempty"`
+	ID              int64      `json:"id"`
+	Account         string     `json:"account"`
+	Remark          string     `json:"remark"`
+	Region          string     `json:"region"`
+	RegionName      string     `json:"region_name"`
+	FlowTotal       float64    `json:"flow_total"`
+	FlowUsed        float64    `json:"flow_used"`
+	Percentage      float64    `json:"percentage"`
+	Threshold       int        `json:"threshold"`
+	OverThreshold   bool       `json:"over_threshold"`
+	InstanceStatus  string     `json:"instance_status"`
+	PublicIP        string     `json:"public_ip,omitempty"`
+	PublicIPv6      string     `json:"public_ipv6,omitempty"`
+	IPUpdatedAt     *time.Time `json:"ip_updated_at,omitempty"`
+	LastUpdated     time.Time  `json:"last_updated"`
+	Stale           bool       `json:"stale"`
+	MonthlyCost     *float64   `json:"monthly_cost,omitempty"`
+	Balance         *float64   `json:"balance,omitempty"`
+	Currency        string     `json:"currency,omitempty"`
+	BillingError    string     `json:"billing_error,omitempty"`
+	KeepAlive       *bool      `json:"keep_alive"`
+	KeepAlivePaused bool       `json:"keep_alive_paused"`
+	ShutdownMode    string     `json:"shutdown_mode"`
+	ScheduleEnabled bool       `json:"schedule_enabled"`
+	ScheduleMode    string     `json:"schedule_mode"`
+	StartTime       string     `json:"start_time,omitempty"`
+	StopTime        string     `json:"stop_time,omitempty"`
+	DailyReport     *bool      `json:"daily_report"`
+	DailyReportTime string     `json:"daily_report_time,omitempty"`
 }
 
 type Job struct {

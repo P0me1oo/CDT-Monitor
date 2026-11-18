@@ -18,6 +18,7 @@ import (
 	"github.com/P0me1oo/CDT-Monitor/internal/cloudflare"
 	"github.com/P0me1oo/CDT-Monitor/internal/domain"
 	"github.com/P0me1oo/CDT-Monitor/internal/notify"
+	"github.com/P0me1oo/CDT-Monitor/internal/scheduler"
 	"github.com/P0me1oo/CDT-Monitor/internal/security"
 	"github.com/P0me1oo/CDT-Monitor/internal/store"
 )
@@ -224,12 +225,7 @@ func (e *Engine) runJob(ctx context.Context, job domain.Job) (string, error) {
 		if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil {
 			return "", err
 		}
-		config, err := e.store.GetConfig(ctx)
-		if err != nil {
-			return "", err
-		}
-		event := newEvent("test", "通知通道测试", "CDT Monitor 的通知配置工作正常。", 0, map[string]string{"发送时间": time.Now().Format("2006-01-02 15:04:05")})
-		return "notification sent", e.notify.Send(ctx, payload.Channel, event, config)
+		return "notification sent", e.SendTestNotification(ctx, payload.Channel, nil)
 	case JobDailyReport:
 		var payload struct {
 			Force      bool    `json:"force"`
@@ -245,6 +241,53 @@ func (e *Engine) runJob(ctx context.Context, job domain.Job) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown job type %q", job.Type)
 	}
+}
+
+// SendTestNotification uses optional unsaved notification settings without persisting them.
+func (e *Engine) SendTestNotification(ctx context.Context, channel string, preview *domain.NotificationConfig) error {
+	config, err := e.store.GetConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if preview != nil {
+		config = applyNotificationPreview(config, channel, *preview)
+	}
+	event := newEvent("test", "通知通道测试", "CDT Monitor 的通知配置工作正常。", 0, map[string]string{"发送时间": time.Now().Format("2006-01-02 15:04:05")})
+	return e.notify.Send(ctx, channel, event, config)
+}
+
+// SendDailyReportPreview builds the normal report but uses the current unsaved
+// notification settings for test delivery only.
+func (e *Engine) SendDailyReportPreview(ctx context.Context, accountID int64, notifications domain.NotificationConfig) (string, error) {
+	return e.generateAndSendDailyReportSelected(ctx, true, accountID, nil, "", "", &notifications)
+}
+
+// Empty secret fields mean "keep the stored credential", consistent with SaveConfig.
+func applyNotificationPreview(current domain.Config, channel string, preview domain.NotificationConfig) domain.Config {
+	switch channel {
+	case "email":
+		if preview.Email.Password == "" {
+			preview.Email.Password = current.Notifications.Email.Password
+		}
+		current.Notifications.Email = preview.Email
+	case "telegram":
+		if preview.Telegram.Token == "" {
+			preview.Telegram.Token = current.Notifications.Telegram.Token
+		}
+		if preview.Telegram.ProxyPass == "" {
+			preview.Telegram.ProxyPass = current.Notifications.Telegram.ProxyPass
+		}
+		current.Notifications.Telegram = preview.Telegram
+	case "webhook":
+		if preview.Webhook.Headers == "" {
+			preview.Webhook.Headers = current.Notifications.Webhook.Headers
+		}
+		if preview.Webhook.Secret == "" {
+			preview.Webhook.Secret = current.Notifications.Webhook.Secret
+		}
+		current.Notifications.Webhook = preview.Webhook
+	}
+	return current
 }
 
 func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool) (string, error) {
@@ -278,28 +321,54 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 
 	actions := make([]string, 0, 2)
 	statusChangedBySchedule := false
-	if account.ScheduleEnabled && !managed {
-		if dueWithin(now, account.StartTime, 10*time.Minute) {
-			changed, runErr := e.executeScheduledAction(ctx, config, account, secret, "start", now)
-			if runErr != nil {
-				return "", runErr
-			}
-			if changed {
-				actions = append(actions, "scheduled_start")
-				account.InstanceStatus = domain.StatusStarting
-				statusChangedBySchedule = true
-			}
+	mode := account.ScheduleMode
+	if mode == "" {
+		mode = "simple"
+		if account.StartCron != "" || account.StopCron != "" {
+			mode = "advanced"
 		}
-		if dueWithin(now, account.StopTime, 10*time.Minute) {
-			changed, runErr := e.executeScheduledAction(ctx, config, account, secret, "stop", now)
-			if runErr != nil {
-				return "", runErr
+	}
+	dailyStartDue := !managed && account.ScheduleEnabled && mode == "simple" && dueWithin(now, account.StartTime, 10*time.Minute)
+	dailyStopDue := !managed && account.ScheduleEnabled && mode == "simple" && dueWithin(now, account.StopTime, 10*time.Minute)
+	cronStartAt, cronStartDue := scheduler.LastOccurrenceWithin(account.StartCron, now, 10*time.Minute)
+	cronStopAt, cronStopDue := scheduler.LastOccurrenceWithin(account.StopCron, now, 10*time.Minute)
+	cronStartDue = !managed && account.ScheduleEnabled && mode == "advanced" && cronStartDue
+	cronStopDue = !managed && account.ScheduleEnabled && mode == "advanced" && cronStopDue
+	scheduledAction, cronSchedule := "", false
+	var cronOccurrence time.Time
+	var cronExpression string
+	if dailyStopDue {
+		scheduledAction = "stop"
+	} else if cronStopDue {
+		scheduledAction, cronSchedule, cronOccurrence, cronExpression = "stop", true, cronStopAt, account.StopCron
+	} else if dailyStartDue {
+		scheduledAction = "start"
+	} else if cronStartDue {
+		scheduledAction, cronSchedule, cronOccurrence, cronExpression = "start", true, cronStartAt, account.StartCron
+	}
+	if scheduledAction != "" {
+		var changed bool
+		var runErr error
+		if cronSchedule {
+			changed, runErr = e.executeCronScheduledAction(ctx, config, account, secret, scheduledAction, cronExpression, cronOccurrence)
+		} else {
+			changed, runErr = e.executeScheduledAction(ctx, config, account, secret, scheduledAction, now)
+		}
+		if runErr != nil {
+			return "", runErr
+		}
+		if changed {
+			actionLabel := "scheduled_" + scheduledAction
+			if cronSchedule {
+				actionLabel = "cron_" + scheduledAction
 			}
-			if changed {
-				actions = append(actions, "scheduled_stop")
+			actions = append(actions, actionLabel)
+			if scheduledAction == "start" {
+				account.InstanceStatus = domain.StatusStarting
+			} else {
 				account.InstanceStatus = domain.StatusStopping
-				statusChangedBySchedule = true
 			}
+			statusChangedBySchedule = true
 		}
 	}
 
@@ -310,7 +379,8 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 	due := force || account.UpdatedAt.IsZero() || time.Since(account.UpdatedAt) >= interval || now.Minute() == 0 || statusChangedBySchedule
 	traffic, status := account.TrafficUsed, account.InstanceStatus
 	if due {
-		var trafficErr, statusErr error
+		var trafficErr, statusErr, detailsErr error
+		var details aliyun.InstanceDetails
 		var wait sync.WaitGroup
 		wait.Add(2)
 		go func() {
@@ -319,29 +389,53 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 		}()
 		go func() {
 			defer wait.Done()
-			status, statusErr = e.provider.GetInstanceStatus(ctx, account, secret)
+			if account.InstanceID == "" {
+				status, statusErr = e.provider.GetInstanceStatus(ctx, account, secret)
+				return
+			}
+			details, detailsErr = e.provider.GetInstanceDetails(ctx, account, secret)
+			if detailsErr == nil {
+				status = details.Status
+			}
 		}()
 		wait.Wait()
+		if details.IPv6Error != nil {
+			_ = e.store.AddLog(ctx, "warning", fmt.Sprintf("IPv6 补充查询失败 [%s]（需 ecs:DescribeNetworkInterfaces 权限）: %v", masked(account.AccessKeyID), details.IPv6Error))
+			// Keep the last address on lookup failure; a successful empty result clears it.
+			details.PublicIPv6 = account.PublicIPv6
+		}
 		if trafficErr != nil {
 			traffic = account.TrafficUsed
 			_ = e.store.AddLog(ctx, "error", fmt.Sprintf("流量查询失败 [%s]: %v", masked(account.AccessKeyID), trafficErr))
 		}
-		if statusErr != nil || status == "" {
+		if statusErr != nil || detailsErr != nil || status == "" {
 			status = account.InstanceStatus
-			_ = e.store.AddLog(ctx, "error", fmt.Sprintf("实例状态查询失败 [%s]: %v", masked(account.AccessKeyID), statusErr))
+			queryErr := statusErr
+			if detailsErr != nil {
+				queryErr = detailsErr
+			}
+			_ = e.store.AddLog(ctx, "error", fmt.Sprintf("实例详情查询失败 [%s]: %v", masked(account.AccessKeyID), queryErr))
 		}
 		updatedAt := time.Now().UTC()
 		if trafficErr != nil {
 			updatedAt = account.UpdatedAt
 		}
+		scheduledStart := slices.Contains(actions, "scheduled_start") || slices.Contains(actions, "cron_start")
+		scheduledStop := slices.Contains(actions, "scheduled_stop") || slices.Contains(actions, "cron_stop")
 		if statusChangedBySchedule {
-			if slices.Contains(actions, "scheduled_start") {
+			if scheduledStart {
 				status = domain.StatusStarting
-			} else if slices.Contains(actions, "scheduled_stop") {
+			} else if scheduledStop {
 				status = domain.StatusStopping
 			}
 		}
-		if err = e.store.UpdateRuntime(ctx, account.ID, traffic, status, updatedAt); err != nil {
+		if detailsErr == nil && statusErr == nil && account.InstanceID != "" {
+			ipUpdatedAt := time.Now().UTC()
+			if err = e.store.UpdateRuntimeWithIPs(ctx, account.ID, traffic, status, details.PublicIP, details.PublicIPv6, ipUpdatedAt, updatedAt); err != nil {
+				return "", err
+			}
+			account.PublicIP, account.PublicIPv6, account.PublicIPUpdatedAt = details.PublicIP, details.PublicIPv6, ipUpdatedAt
+		} else if err = e.store.UpdateRuntime(ctx, account.ID, traffic, status, updatedAt); err != nil {
 			return "", err
 		}
 		if trafficErr == nil {
@@ -401,7 +495,7 @@ func (e *Engine) processAccount(ctx context.Context, accountID int64, force bool
 	}
 
 	effectiveKeepAlive := resolveKeepAlive(account, config)
-	if !managed && effectiveKeepAlive && !overThreshold && !statusChangedBySchedule && !account.KeepAlivePaused(now) && status == domain.StatusStopped && (!account.ScheduleEnabled || inTimeRange(now.Format("15:04"), account.StartTime, account.StopTime)) {
+	if !managed && effectiveKeepAlive && !overThreshold && !statusChangedBySchedule && !account.KeepAlivePaused(now) && status == domain.StatusStopped && (!usesSimpleSchedule(account) || inTimeRange(now.Format("15:04"), account.StartTime, account.StopTime)) {
 		key := fmt.Sprintf("keepalive:%d:%s", account.ID, now.Format("200601021504"))
 		fresh, recordErr := e.store.RecordActionEvent(ctx, key, account.ID, "keepalive", "attempting", "")
 		if recordErr != nil {
@@ -472,6 +566,32 @@ func (e *Engine) executeScheduledAction(ctx context.Context, config domain.Confi
 	return true, nil
 }
 
+func (e *Engine) executeCronScheduledAction(ctx context.Context, config domain.Config, account domain.Account, secret, action, expression string, occurrence time.Time) (bool, error) {
+	key := fmt.Sprintf("cron_schedule:%d:%s:%s", account.ID, occurrence.Format("200601021504"), action)
+	fresh, err := e.store.RecordActionEvent(ctx, key, account.ID, "cron_schedule_"+action, "attempting", expression)
+	if err != nil || !fresh {
+		return false, err
+	}
+	if err = e.provider.ControlInstance(ctx, account, secret, action, resolveShutdownMode(account, config)); err != nil {
+		_ = e.store.DeleteActionEvent(ctx, key)
+		return false, err
+	}
+	status := domain.StatusStarting
+	if action == "stop" {
+		status = domain.StatusStopping
+	}
+	_ = e.store.UpdateRuntime(ctx, account.ID, account.TrafficUsed, status, time.Now().UTC())
+	_ = e.store.AddLog(ctx, "info", fmt.Sprintf("执行 Cron 定时%s [%s] (%s)", map[string]string{"start": "开机", "stop": "关机"}[action], masked(account.AccessKeyID), expression))
+	if action == "start" {
+		_ = e.store.SetKeepAlivePause(ctx, account.ID, 0)
+	}
+	if config.EnableScheduleMail {
+		event := newEvent("schedule", "定时任务已执行", fmt.Sprintf("实例 Cron 定时%s指令已发送。", map[string]string{"start": "开机", "stop": "关机"}[action]), account.ID, map[string]string{"账号": masked(account.AccessKeyID), "实例": account.InstanceID, "Cron": expression})
+		_ = e.store.AddOutbox(ctx, event, notify.EnabledChannels(config))
+	}
+	return true, nil
+}
+
 func (e *Engine) control(ctx context.Context, accountID int64, action, source string) (string, error) {
 	e.automationMu.RLock()
 	defer e.automationMu.RUnlock()
@@ -537,6 +657,17 @@ func (e *Engine) control(ctx context.Context, accountID int64, action, source st
 func keepAlivePauseUntil(now time.Time, account domain.Account) int64 {
 	if !account.ScheduleEnabled {
 		return domain.KeepAlivePauseUntilStart
+	}
+	if account.ScheduleMode == "advanced" || (account.ScheduleMode == "" && (account.StartCron != "" || account.StopCron != "")) {
+		schedule, err := scheduler.Parse(account.StartCron)
+		if err != nil {
+			return domain.KeepAlivePauseUntilStart
+		}
+		next := schedule.Next(now)
+		if next.IsZero() {
+			return domain.KeepAlivePauseUntilStart
+		}
+		return next.Unix()
 	}
 	parsed, err := time.Parse("15:04", account.StartTime)
 	if err != nil {
@@ -692,7 +823,7 @@ func scheduleActionKey(account domain.Account, cycleDate, action string) string 
 
 func dailyReportKey(account domain.Account, cycleDate string) string {
 	configuredTime := account.DailyReportTime
-	if account.ScheduleEnabled {
+	if usesSimpleSchedule(account) {
 		configuredTime = account.StopTime
 		if configuredTime == "" {
 			configuredTime = "23:30"
@@ -701,6 +832,16 @@ func dailyReportKey(account domain.Account, cycleDate string) string {
 		configuredTime = "00:00"
 	}
 	return fmt.Sprintf("daily_report:%d:%s:%s", account.ID, compactDate(cycleDate), scheduleTimeKey(configuredTime))
+}
+
+func usesSimpleSchedule(account domain.Account) bool {
+	if !account.ScheduleEnabled {
+		return false
+	}
+	if account.ScheduleMode == "simple" {
+		return true
+	}
+	return account.ScheduleMode != "advanced" && account.StartCron == "" && account.StopCron == ""
 }
 
 func scheduledStopSnapshotReady(snap store.TrafficSnapshot, configuredStop string) bool {
@@ -767,14 +908,25 @@ func (e *Engine) Summary(ctx context.Context) ([]domain.AccountSummary, time.Tim
 	}
 	now := time.Now().In(location)
 	for _, account := range config.Accounts {
+		mode := account.ScheduleMode
+		if mode == "" {
+			mode = "simple"
+			if account.StartCron != "" || account.StopCron != "" {
+				mode = "advanced"
+			}
+		}
 		percentage := usagePercent(account.TrafficUsed, account.MaxTraffic)
 		item := domain.AccountSummary{
 			ID: account.ID, Account: masked(account.AccessKeyID), Remark: account.Remark, Region: account.RegionID, RegionName: RegionName(account.RegionID),
 			FlowTotal: account.MaxTraffic, FlowUsed: math.Round(account.TrafficUsed*100) / 100, Percentage: percentage, Threshold: config.TrafficThreshold,
-			OverThreshold: percentage >= float64(config.TrafficThreshold), InstanceStatus: account.InstanceStatus, LastUpdated: account.UpdatedAt,
+			OverThreshold: percentage >= float64(config.TrafficThreshold), InstanceStatus: account.InstanceStatus, PublicIP: account.PublicIP, PublicIPv6: account.PublicIPv6, LastUpdated: account.UpdatedAt,
+			KeepAlivePaused: resolveKeepAlive(account, config) && account.KeepAlivePaused(now),
 			Stale:           account.UpdatedAt.IsZero() || time.Since(account.UpdatedAt) > time.Duration(max(config.APIInterval*2, 180))*time.Second,
-			KeepAlivePaused: config.KeepAlive && account.KeepAlivePaused(now),
-			KeepAlive:       account.KeepAlive, ShutdownMode: account.ShutdownMode, ScheduleEnabled: account.ScheduleEnabled, StartTime: account.StartTime, StopTime: account.StopTime, DailyReport: account.DailyReport, DailyReportTime: account.DailyReportTime,
+			KeepAlive:       account.KeepAlive, ShutdownMode: account.ShutdownMode, ScheduleEnabled: account.ScheduleEnabled, ScheduleMode: mode, StartTime: account.StartTime, StopTime: account.StopTime, DailyReport: account.DailyReport, DailyReportTime: account.DailyReportTime,
+		}
+		if !account.PublicIPUpdatedAt.IsZero() {
+			ipUpdatedAt := account.PublicIPUpdatedAt
+			item.IPUpdatedAt = &ipUpdatedAt
 		}
 		if config.EnableBilling {
 			var billingError struct {
@@ -840,7 +992,7 @@ func (e *Engine) checkDailyReport(ctx context.Context, now time.Time) {
 		if acc.DailyReport != nil && !*acc.DailyReport {
 			continue
 		}
-		if !acc.ScheduleEnabled {
+		if !usesSimpleSchedule(acc) {
 			targetTime := acc.DailyReportTime
 			if targetTime == "" {
 				targetTime = "00:00"
@@ -986,7 +1138,7 @@ func formatTrafficGB(gb float64) string {
 }
 
 func (e *Engine) calculateInstanceConsumption(ctx context.Context, acc domain.Account, now time.Time, dateStr string, force bool) (float64, string) {
-	if acc.ScheduleEnabled && !force {
+	if usesSimpleSchedule(acc) && !force {
 		dateStr = scheduleCycleDate(now, acc.StartTime, acc.StopTime)
 	}
 	snap := store.TrafficSnapshot{StartTraffic: -1, StopTraffic: -1}
@@ -1001,7 +1153,7 @@ func (e *Engine) calculateInstanceConsumption(ctx context.Context, acc domain.Ac
 		periodDesc = "测试推送（前24小时）"
 		startTraffic := e.findStartTrafficFor24Hours(ctx, acc.ID, now)
 		consumed = acc.TrafficUsed - startTraffic
-	} else if acc.ScheduleEnabled {
+	} else if usesSimpleSchedule(acc) {
 		periodDesc = fmt.Sprintf("定时时段 (%s ~ %s)", acc.StartTime, acc.StopTime)
 		startTraffic := snap.StartTraffic
 		if startTraffic < 0 {
@@ -1077,7 +1229,7 @@ func (e *Engine) refreshTrafficForReport(ctx context.Context, account domain.Acc
 }
 
 func (e *Engine) refreshTrafficForDailyReport(ctx context.Context, account domain.Account, now time.Time, maxAge time.Duration, force bool) (domain.Account, error) {
-	if account.ScheduleEnabled && !force {
+	if usesSimpleSchedule(account) && !force {
 		cycleDate := scheduleCycleDate(now, account.StartTime, account.StopTime)
 		snap, err := e.store.GetTrafficSnapshot(ctx, account.ID, cycleDate)
 		if err != nil || snap.StopTraffic < 0 {
@@ -1113,10 +1265,16 @@ func (e *Engine) generateAndSendDailyReportForAccounts(ctx context.Context, acco
 	return e.generateAndSendDailyReportSelected(ctx, false, 0, accountIDs, reportDate, jobID)
 }
 
-func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force bool, targetID int64, accountIDs []int64, reportDate, jobID string) (string, error) {
+func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force bool, targetID int64, accountIDs []int64, reportDate, jobID string, notificationPreview ...*domain.NotificationConfig) (string, error) {
 	config, err := e.store.GetConfig(ctx)
 	if err != nil {
 		return "", err
+	}
+	preview := len(notificationPreview) > 0 && notificationPreview[0] != nil
+	if preview {
+		for _, channel := range []string{"email", "telegram", "webhook"} {
+			config = applyNotificationPreview(config, channel, *notificationPreview[0])
+		}
 	}
 	if !force && !config.EnableDailyReport {
 		return "daily report disabled", nil
@@ -1139,7 +1297,7 @@ func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force b
 		}
 		remaining := 0
 		for _, acc := range config.Accounts {
-			if selected[acc.ID] && !acc.ScheduleEnabled && (acc.DailyReport == nil || *acc.DailyReport) {
+			if selected[acc.ID] && !usesSimpleSchedule(acc) && (acc.DailyReport == nil || *acc.DailyReport) {
 				targetID = acc.ID
 				remaining++
 			}
@@ -1164,7 +1322,7 @@ func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force b
 			return "daily report disabled for this account", nil
 		}
 		refreshed, refreshErr := e.refreshTrafficForDailyReport(ctx, *targetAcc, now, time.Duration(config.APIInterval)*time.Second, force)
-		if refreshErr != nil && targetAcc.ScheduleEnabled && !force {
+		if refreshErr != nil && usesSimpleSchedule(*targetAcc) && !force {
 			return "", fmt.Errorf("refresh scheduled report traffic: %w", refreshErr)
 		}
 		*targetAcc = refreshed
@@ -1247,7 +1405,7 @@ func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force b
 			_ = e.store.AddLog(ctx, "info", msg)
 			return msg, nil
 		}
-		if err = e.store.AddOutbox(ctx, event, channels); err != nil {
+		if err = e.deliverDailyReport(ctx, config, event, channels, preview); err != nil {
 			return "", err
 		}
 		msg := fmt.Sprintf("实例 [%s] 流量与账单日报已发送 (消耗: %s)", instName, formatTrafficGB(consumed))
@@ -1258,7 +1416,7 @@ func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force b
 	var items []instanceReportItem
 	var excludedCount int
 	for _, acc := range config.Accounts {
-		if selected != nil && (!selected[acc.ID] || acc.ScheduleEnabled) {
+		if selected != nil && (!selected[acc.ID] || usesSimpleSchedule(acc)) {
 			continue
 		}
 		if acc.DailyReport != nil && !*acc.DailyReport {
@@ -1266,7 +1424,7 @@ func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force b
 			continue
 		}
 		refreshed, refreshErr := e.refreshTrafficForDailyReport(ctx, acc, now, time.Duration(config.APIInterval)*time.Second, force)
-		if refreshErr != nil && acc.ScheduleEnabled && !force {
+		if refreshErr != nil && usesSimpleSchedule(acc) && !force {
 			return "", fmt.Errorf("refresh scheduled report traffic: %w", refreshErr)
 		}
 		acc = refreshed
@@ -1470,10 +1628,22 @@ func (e *Engine) generateAndSendDailyReportSelected(ctx context.Context, force b
 		_ = e.store.AddLog(ctx, "info", msg)
 		return msg, nil
 	}
-	if err = e.store.AddOutbox(ctx, event, channels); err != nil {
+	if err = e.deliverDailyReport(ctx, config, event, channels, preview); err != nil {
 		return "", err
 	}
 	msg := fmt.Sprintf("每日流量与账单日报已发送 (纳入 %d 台实例，消耗总和: %s)", len(items), formatTrafficGB(totalConsumed))
 	_ = e.store.AddLog(ctx, "info", msg)
 	return msg, nil
+}
+
+func (e *Engine) deliverDailyReport(ctx context.Context, config domain.Config, event domain.NotificationEvent, channels []string, preview bool) error {
+	if !preview {
+		return e.store.AddOutbox(ctx, event, channels)
+	}
+	for _, channel := range channels {
+		if err := e.notify.Send(ctx, channel, event, config); err != nil {
+			return fmt.Errorf("daily report test on %s: %w", channel, err)
+		}
+	}
+	return nil
 }

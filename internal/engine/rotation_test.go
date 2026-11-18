@@ -31,6 +31,11 @@ func (p *rotationProvider) GetTraffic(_ context.Context, a domain.Account, _ str
 func (p *rotationProvider) GetInstanceStatus(_ context.Context, a domain.Account, _ string) (string, error) {
 	return p.info[a.ID].Status, nil
 }
+
+func (p *rotationProvider) GetInstanceDetails(_ context.Context, a domain.Account, _ string) (aliyun.InstanceDetails, error) {
+	info := p.info[a.ID]
+	return aliyun.InstanceDetails{Status: info.Status, PublicIP: info.PublicIP}, nil
+}
 func (p *rotationProvider) ControlInstance(_ context.Context, a domain.Account, _, action, mode string) error {
 	p.actions = append(p.actions, fmt.Sprintf("%d:%s:%s", a.ID, action, mode))
 	info := p.info[a.ID]
@@ -248,5 +253,19 @@ func TestRotationOwnsLegacyScheduleKeepaliveAndManualActions(t *testing.T) {
 	config.Accounts = config.Accounts[1:]
 	if err = e.SaveConfig(t.Context(), config); err == nil {
 		t.Fatal("deleted active rotation member")
+	}
+}
+
+func TestRotationOwnsCronSchedules(t *testing.T) {
+	e, p, _, accounts, _ := rotationFixture(t)
+	a := accounts[0]
+	if err := e.store.UpdateAccountSettingsWithScheduleMode(t.Context(), a.ID, nil, "", true, "advanced", "", "", nil, "00:00", "* * * * *", "* * * * *", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.processAccount(t.Context(), a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.actions) != 0 {
+		t.Fatalf("cron schedule controlled rotation member: %v", p.actions)
 	}
 }

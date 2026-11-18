@@ -12,10 +12,13 @@ CDT Monitor 是一个用于阿里云 CDT 流量监控、ECS 实例自动化控�
 - 可配置流量阈值，支持“停机并通知”和“仅通知”。
 - 普通停机 `KeepCharging` 和节省停机 `StopCharging`。
 - 每日定时开关机，任务延迟或进程重启后提供短窗口补偿。
+- 支持按分钟、日期和星期设置高级定时规则，并预览后续执行时间。
+- 展示实例公网 IPv4、IPv6，支持从网卡补查 IPv6；补查需要 `ecs:DescribeNetworkInterfaces` 权限。
 - 多台 ECS 按固定时段轮换，自动更新 Cloudflare 灰云 A 记录；达到全局流量告警阈值立即节省停机，并由下一台未超限机器接班。
 - 抢占式实例保活，阈值熔断优先于保活。
 - 保活启用时仍可手动关机；关机后自动暂停该实例的保活，到下一次定时开机时恢复。
 - Web 控制台手动开机、关机和刷新。
+- 支持浅色、深色和跟随系统的外观设置。
 - SMTP、Telegram Bot、自定义 Webhook 通知；Telegram 支持自定义反代和 SOCKS5。
 - 中国站和国际站 BSS 端点、CNY/USD 账单与余额缓存。
 - 首次安装向导、管理员 Session、登录限速、CSRF 防护。
@@ -24,6 +27,11 @@ CDT Monitor 是一个用于阿里云 CDT 流量监控、ECS 实例自动化控�
 - 自动清理日志/统计，健康检查和 JSON 容器日志。
 - 原 PHP SQLite 数据库可原地升级；启动前请先备份 `data/data.sqlite`。
 - 日报推送，精准掌握每台实例流量消耗情况
+
+测试通知和日报时会使用页面上尚未保存的通知配置；凭据留空时沿用已保存的值。测试不会保存这些配置。
+
+高级定时使用五段 Cron 表达式，依次表示分钟、小时、日期、月份和星期，例如 `0 9 * * 1-5` 表示每周一至周五 09:00。执行时间以系统设置中的业务时区为准。手动关机后，保活暂停到下一次定时开机；未配置开机规则时暂停到手动开机。轮换计划启用期间，成员机器的普通定时和高级定时均由轮换计划接管。
+
 ## 截图
 | ![https://assets.qninq.cn/qning/Mj50xXuE.webp](https://assets.qninq.cn/qning/Mj50xXuE.webp) | ![https://assets.qninq.cn/qning/049BVuDm.webp](https://assets.qninq.cn/qning/049BVuDm.webp) | ![https://assets.qninq.cn/qning/vPQwvG0F.webp](https://assets.qninq.cn/qning/vPQwvG0F.webp) |
 |---|---|---|
@@ -266,6 +274,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cdt-monitor ./cmd/cdt-monit
 
 - 公网部署必须在反向代理或网关层启用 HTTPS。
 - 阿里云 RAM 用户只授予 CDT 查询、ECS 查询/启停和可选 BSS 查询所需的最小权限。
+- IPv6 采集会先请求 `DescribeInstances` 的主网卡扩展字段；未返回地址时，按实例 ID 调用 `DescribeNetworkInterfaces` 查询主、副网卡。旧 RAM 策略需补充 `ecs:DescribeNetworkInterfaces` 读取权限，并授权对应 ENI 资源（[官方授权说明](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-describenetworkinterfaces)）。补查及分页最多等待 3 秒；权限不足或超时会记录警告，保留上次 IPv6，仍正常更新实例状态和 IPv4。成功查询确认无地址时才清除旧 IPv6。
 - 小组件只使用 `widget:read` Key；不要把 `instance:control` Key 放入公开脚本。
 - 定期撤销不再使用的 Key，并备份整个数据目录。
 - 不要把 `data/`、日志或 API Token 提交到 Git。

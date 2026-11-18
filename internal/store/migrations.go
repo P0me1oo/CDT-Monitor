@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     access_key_secret TEXT NOT NULL DEFAULT '',
     region_id TEXT NOT NULL DEFAULT '',
     instance_id TEXT NOT NULL DEFAULT '',
+	    public_ip TEXT NOT NULL DEFAULT '',
+    public_ipv6 TEXT NOT NULL DEFAULT '',
+	    ip_updated_at INTEGER NOT NULL DEFAULT 0,
     max_traffic REAL NOT NULL DEFAULT 0,
     schedule_enabled INTEGER NOT NULL DEFAULT 0,
     start_time TEXT NOT NULL DEFAULT '',
@@ -32,7 +35,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     remark TEXT NOT NULL DEFAULT '',
     site_type TEXT NOT NULL DEFAULT 'china',
     deleted_at INTEGER NOT NULL DEFAULT 0,
-    daily_report_time TEXT NOT NULL DEFAULT '00:00'
+	    daily_report_time TEXT NOT NULL DEFAULT '00:00',
+	    start_cron TEXT NOT NULL DEFAULT '',
+	    stop_cron TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,10 +169,16 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{"site_type", "TEXT NOT NULL DEFAULT 'china'"},
 		{"deleted_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"keepalive_paused_until", "INTEGER NOT NULL DEFAULT 0"},
+		{"public_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"public_ipv6", "TEXT NOT NULL DEFAULT ''"},
+		{"ip_updated_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"keep_alive", "INTEGER"},
 		{"shutdown_mode", "TEXT NOT NULL DEFAULT ''"},
 		{"daily_report", "INTEGER"},
 		{"daily_report_time", "TEXT NOT NULL DEFAULT '00:00'"},
+		{"start_cron", "TEXT NOT NULL DEFAULT ''"},
+		{"stop_cron", "TEXT NOT NULL DEFAULT ''"},
+		{"schedule_mode", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := s.ensureColumn(ctx, "accounts", col.name, col.definition); err != nil {
 			return err

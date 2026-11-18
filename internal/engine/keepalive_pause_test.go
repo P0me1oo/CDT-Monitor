@@ -30,6 +30,11 @@ func (p *recordingProvider) GetInstanceStatus(context.Context, domain.Account, s
 	return p.status, nil
 }
 
+func (p *recordingProvider) GetInstanceDetails(ctx context.Context, account domain.Account, secret string) (aliyun.InstanceDetails, error) {
+	status, err := p.GetInstanceStatus(ctx, account, secret)
+	return aliyun.InstanceDetails{Status: status}, err
+}
+
 func (p *recordingProvider) ControlInstance(_ context.Context, _ domain.Account, _, action, _ string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -120,6 +125,57 @@ func TestKeepAliveRestartsStoppedInstance(t *testing.T) {
 	actions := provider.actions()
 	if len(actions) != 1 || actions[0] != "start" {
 		t.Fatalf("保活应拉起停止的实例：actions=%v", actions)
+	}
+}
+
+func TestKeepAlivePauseUntilCronStart(t *testing.T) {
+	location := time.FixedZone("CST", 8*3600)
+	now := time.Date(2026, 11, 16, 10, 30, 0, 0, location)
+	for _, tc := range []struct {
+		name    string
+		account domain.Account
+		want    int64
+	}{
+		{"advanced", domain.Account{ScheduleEnabled: true, ScheduleMode: "advanced", StartTime: "11:00", StartCron: "0 9 * * 1-5"}, time.Date(2026, 11, 17, 9, 0, 0, 0, location).Unix()},
+		{"legacy cron mode", domain.Account{ScheduleEnabled: true, StartCron: "0 9 * * 1-5"}, time.Date(2026, 11, 17, 9, 0, 0, 0, location).Unix()},
+		{"no start", domain.Account{ScheduleEnabled: true, ScheduleMode: "advanced", StartTime: "11:00", StopCron: "0 18 * * *"}, domain.KeepAlivePauseUntilStart},
+		{"invalid", domain.Account{ScheduleEnabled: true, ScheduleMode: "advanced", StartCron: "invalid"}, domain.KeepAlivePauseUntilStart},
+		{"impossible", domain.Account{ScheduleEnabled: true, ScheduleMode: "advanced", StartCron: "0 9 30 2 *"}, domain.KeepAlivePauseUntilStart},
+		{"disabled", domain.Account{StartCron: "0 9 * * *"}, domain.KeepAlivePauseUntilStart},
+		{"simple ignores saved cron", domain.Account{ScheduleEnabled: true, ScheduleMode: "simple", StartTime: "11:00", StartCron: "0 9 * * *"}, time.Date(2026, 11, 16, 11, 0, 0, 0, location).Unix()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keepAlivePauseUntil(now, tc.account); got != tc.want {
+				t.Fatalf("pause=%d want=%d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCronScheduledStartClearsKeepAlivePause(t *testing.T) {
+	ctx := context.Background()
+	st, engine, _, id := newKeepAliveEngine(t, domain.Account{
+		AccessKeyID: "LTAItest", AccessKeySecret: "secret", RegionID: "cn-hongkong", InstanceID: "i-test", MaxTraffic: 200, SiteType: "china",
+		ScheduleEnabled: true, ScheduleMode: "advanced", StartCron: "0 9 * * *",
+	})
+	if err := st.SetKeepAlivePause(ctx, id, domain.KeepAlivePauseUntilStart); err != nil {
+		t.Fatal(err)
+	}
+	config, err := st.GetConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := config.Accounts[0]
+	changed, err := engine.executeCronScheduledAction(ctx, config, account, "secret", "start", account.StartCron, time.Now())
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	account, err = st.GetAccount(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.KeepAlivePausedUntil != 0 {
+		t.Fatalf("cron start left keep-alive paused: %d", account.KeepAlivePausedUntil)
 	}
 }
 
